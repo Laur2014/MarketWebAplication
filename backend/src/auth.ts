@@ -14,6 +14,28 @@ export type AuthUser = {
   createdAt: string;
 };
 
+type AuthUserDbRow = {
+  id: number;
+  username: string;
+  email: string | null;
+  role: "user" | "admin";
+  balance: number;
+  total_winnings: number;
+  created_at: string;
+};
+
+function mapAuthUser(row: AuthUserDbRow): AuthUser {
+  return {
+    id: Number(row.id),
+    username: row.username,
+    email: row.email,
+    role: row.role,
+    balance: Number(row.balance || 0),
+    totalWinnings: Number(row.total_winnings || 0),
+    createdAt: row.created_at,
+  };
+}
+
 export function hashApiKey(rawKey: string) {
   return createHash("sha256").update(rawKey).digest("hex");
 }
@@ -30,6 +52,9 @@ export async function hashPassword(password: string) {
 }
 
 export async function verifyPassword(password: string, hash: string) {
+  if (!hash || typeof hash !== "string") {
+    return false;
+  }
   try {
     return await Bun.password.verify(password, hash);
   } catch {
@@ -79,15 +104,15 @@ export async function authFromContext(context: Pick<Context, "request">) {
 
   if (apiKeyHeader) {
     const apiKeyHash = hashApiKey(apiKeyHeader);
-    const user = (await db
+    const row = (await db
       .query(
-        `SELECT id, username, email, role, balance, total_winnings as totalWinnings, created_at as createdAt
+        `SELECT id, username, email, role, balance, total_winnings, created_at
          FROM users
          WHERE api_key_hash = ?`
       )
-      .get(apiKeyHash)) as AuthUser | null;
+      .get(apiKeyHash)) as AuthUserDbRow | null;
 
-    return user;
+    return row ? mapAuthUser(row) : null;
   }
 
   const token = getSessionTokenFromContext(context);
@@ -96,11 +121,11 @@ export async function authFromContext(context: Pick<Context, "request">) {
   }
   const session = (await db
     .query(
-      `SELECT s.user_id as userId
+      `SELECT s.user_id
        FROM sessions s
        WHERE s.token = ? AND s.expires_at > ?`
     )
-    .get(token, nowIso())) as { userId: number } | null;
+    .get(token, nowIso())) as { user_id: number } | null;
 
   if (!session) {
     return null;
@@ -108,13 +133,13 @@ export async function authFromContext(context: Pick<Context, "request">) {
 
   const user = (await db
     .query(
-      `SELECT id, username, email, role, balance, total_winnings as totalWinnings, created_at as createdAt
+       `SELECT id, username, email, role, balance, total_winnings, created_at
        FROM users
        WHERE id = ?`
     )
-    .get(session.userId)) as AuthUser | null;
+    .get(Number(session.user_id))) as AuthUserDbRow | null;
 
-  return user;
+  return user ? mapAuthUser(user) : null;
 }
 
 export async function requireUser(context: Pick<Context, "request" | "set">) {

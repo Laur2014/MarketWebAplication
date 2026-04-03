@@ -286,8 +286,8 @@ const app = new Elysia()
 
     const user = (await db
       .query(
-        `SELECT id, username, email, password_hash as passwordHash, role, balance,
-                total_winnings as totalWinnings, created_at as createdAt
+        `SELECT id, username, email, password_hash, role, balance,
+                total_winnings, created_at
          FROM users
          WHERE username = ?`
       )
@@ -296,11 +296,11 @@ const app = new Elysia()
           id: number;
           username: string;
           email: string | null;
-          passwordHash: string;
+          password_hash: string;
           role: "user" | "admin";
           balance: number;
-          totalWinnings: number;
-          createdAt: string;
+          total_winnings: number;
+          created_at: string;
         }
       | null;
 
@@ -309,7 +309,7 @@ const app = new Elysia()
       return { error: "Invalid credentials" };
     }
 
-    const isValid = await verifyPassword(password, user.passwordHash);
+    const isValid = await verifyPassword(password, user.password_hash);
     if (!isValid) {
       set.status = 401;
       return { error: "Invalid credentials" };
@@ -321,15 +321,15 @@ const app = new Elysia()
     return {
       token: session.token,
       user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-        balance: user.balance,
-        totalWinnings: user.totalWinnings,
-        createdAt: user.createdAt,
-      },
-    };
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: user.role,
+          balance: user.balance,
+          totalWinnings: Number(user.total_winnings || 0),
+          createdAt: user.created_at,
+        },
+      };
   })
   .post("/auth/logout", async ({ request, set }) => {
     const sessionToken = getSessionTokenFromContext({ request });
