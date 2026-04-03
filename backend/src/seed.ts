@@ -73,6 +73,7 @@ async function ensureMarket(createdBy: number, market: SeedMarket) {
     .get(market.title)) as { id: number } | null;
 
   if (existing) {
+    await ensureOutcomesForMarket(existing.id, market.outcomes);
     return existing.id;
   }
 
@@ -90,6 +91,20 @@ async function ensureMarket(createdBy: number, market: SeedMarket) {
   }
 
   return marketId;
+}
+
+async function ensureOutcomesForMarket(marketId: number, expectedOutcomes: string[]) {
+  const existing = (await db
+    .query("SELECT label FROM outcomes WHERE market_id = ?")
+    .all(marketId)) as Array<{ label: string }>;
+
+  const existingLabels = new Set(existing.map((row) => row.label.trim().toLowerCase()));
+  for (const rawLabel of expectedOutcomes) {
+    const label = rawLabel.trim();
+    if (!label) continue;
+    if (existingLabels.has(label.toLowerCase())) continue;
+    await db.query("INSERT INTO outcomes (market_id, label, total_amount_staked) VALUES (?, ?, 0)").run(marketId, label);
+  }
 }
 
 async function getOutcomeIdByLabel(marketId: number, label: string) {
@@ -528,6 +543,10 @@ async function run() {
     const outcomes = (await db
       .query("SELECT id, label FROM outcomes WHERE market_id = ? ORDER BY id ASC")
       .all(marketId)) as Array<{ id: number; label: string }>;
+
+    if (outcomes.length === 0) {
+      continue;
+    }
 
     const picks = randomInt(3, 7);
     for (let i = 0; i < picks; i++) {
