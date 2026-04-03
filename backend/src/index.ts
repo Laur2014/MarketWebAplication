@@ -187,6 +187,16 @@ async function insertAndGetId(sqlText: string, ...params: unknown[]) {
   return Number(result.lastInsertRowid);
 }
 
+async function findUserByUsernameOrEmail(username: string, email: string | null) {
+  if (email) {
+    return (await db
+      .query("SELECT id FROM users WHERE username = ? OR email = ?")
+      .get(username, email)) as { id: number } | null;
+  }
+
+  return (await db.query("SELECT id FROM users WHERE username = ?").get(username)) as { id: number } | null;
+}
+
 await initSchema();
 await ensureHistoryBootstrapped();
 
@@ -221,9 +231,7 @@ const app = new Elysia()
       return { error: "Password must be at least 6 characters" };
     }
 
-    const existing = (await db
-      .query("SELECT id FROM users WHERE username = ? OR (? IS NOT NULL AND email = ?)")
-      .get(username, email, email)) as { id: number } | null;
+    const existing = await findUserByUsernameOrEmail(username, email);
 
     if (existing) {
       set.status = 409;
@@ -354,9 +362,7 @@ const app = new Elysia()
       return { error: "Password must be at least 6 characters" };
     }
 
-    const existing = (await db
-      .query("SELECT id FROM users WHERE username = ? OR (? IS NOT NULL AND email = ?)")
-      .get(username, email, email)) as { id: number } | null;
+    const existing = await findUserByUsernameOrEmail(username, email);
 
     if (existing) {
       set.status = 409;
