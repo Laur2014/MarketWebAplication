@@ -20,6 +20,14 @@ async function ensureUser(params: SeedUser) {
     | null;
 
   if (existing) {
+    // Keep demo accounts deterministic across environments by rotating hash to current algorithm.
+    const passwordHash = await Bun.password.hash(params.password, {
+      algorithm: "bcrypt",
+      cost: 10,
+    });
+    await db
+      .query("UPDATE users SET email = ?, password_hash = ?, role = ? WHERE id = ?")
+      .run(params.email, passwordHash, params.role, existing.id);
     return existing.id;
   }
 

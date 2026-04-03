@@ -64,7 +64,7 @@ bun run dev
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:3001`
-
+- online website: `https://marketwebaplication.pages.dev`
 Frontend API base URL can be configured with:
 
 ```bash

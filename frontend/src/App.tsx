@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
-import { API_BASE_URL, apiRequest } from "./api";
+import { apiRequest } from "./api";
 
 type User = {
   id: number;
@@ -274,7 +274,7 @@ function AuthScreen({ onAuth }: { onAuth: (token: string, user: User) => void })
             {loading ? "Please wait..." : isRegister ? "Create Account" : "Login"}
           </button>
         </form>
-        <button className="ghost" onClick={() => setIsRegister((old) => !old)}>
+        <button className="ghost auth-switch-btn" onClick={() => setIsRegister((old) => !old)}>
           {isRegister ? "Have an account? Login" : "No account? Register"}
         </button>
         <div className="demo-tip">
@@ -1363,9 +1363,6 @@ function AppShell({
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-      <footer className="footer">
-        API: <code>{API_BASE_URL}</code>
-      </footer>
     </div>
   );
 }

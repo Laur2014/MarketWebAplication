@@ -23,11 +23,18 @@ export function generateApiKey() {
 }
 
 export async function hashPassword(password: string) {
-  return Bun.password.hash(password);
+  return Bun.password.hash(password, {
+    algorithm: "bcrypt",
+    cost: 10,
+  });
 }
 
 export async function verifyPassword(password: string, hash: string) {
-  return Bun.password.verify(password, hash);
+  try {
+    return await Bun.password.verify(password, hash);
+  } catch {
+    return false;
+  }
 }
 
 function parseCookies(cookieHeader: string | null) {
