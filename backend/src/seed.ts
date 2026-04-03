@@ -1,7 +1,5 @@
 import { db, initSchema, nowIso } from "./db";
 
-initSchema();
-
 type SeedUser = {
   username: string;
   email: string;
@@ -17,7 +15,7 @@ type SeedMarket = {
 };
 
 async function ensureUser(params: SeedUser) {
-  const existing = db.query("SELECT id, role FROM users WHERE username = ?").get(params.username) as
+  const existing = (await db.query("SELECT id, role FROM users WHERE username = ?").get(params.username)) as
     | { id: number; role: "user" | "admin" }
     | null;
 
@@ -28,23 +26,25 @@ async function ensureUser(params: SeedUser) {
   const passwordHash = await Bun.password.hash(params.password);
   const createdAt = nowIso();
 
-  const result = db
-    .query(
-      "INSERT INTO users (username, email, password_hash, role, balance, total_winnings, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)"
-    )
-    .run(params.username, params.email, passwordHash, params.role, params.balance ?? 1000, createdAt);
+  const userId = await insertAndGetId(
+    "INSERT INTO users (username, email, password_hash, role, balance, total_winnings, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)",
+    params.username,
+    params.email,
+    passwordHash,
+    params.role,
+    params.balance ?? 1000,
+    createdAt
+  );
 
-  const userId = Number(result.lastInsertRowid);
-
-  db.query(
+  await db.query(
     "INSERT INTO transactions (user_id, type, amount, created_at, meta) VALUES (?, 'initial_balance', ?, ?, ?)"
   ).run(userId, params.balance ?? 1000, createdAt, "{\"source\":\"seed\"}");
 
   return userId;
 }
 
-function raiseExistingBalancesToTarget(targetBalance: number) {
-  const users = db.query("SELECT id, balance FROM users").all() as Array<{ id: number; balance: number }>;
+async function raiseExistingBalancesToTarget(targetBalance: number) {
+  const users = (await db.query("SELECT id, balance FROM users").all()) as Array<{ id: number; balance: number }>;
   const now = nowIso();
 
   for (const user of users) {
@@ -52,85 +52,103 @@ function raiseExistingBalancesToTarget(targetBalance: number) {
     const delta = Number((targetBalance - current).toFixed(2));
     if (Math.abs(delta) < 0.01) continue;
 
-    db.query("UPDATE users SET balance = ? WHERE id = ?").run(targetBalance, user.id);
-    db.query(
+    await db.query("UPDATE users SET balance = ? WHERE id = ?").run(targetBalance, user.id);
+    await db.query(
       "INSERT INTO transactions (user_id, type, amount, created_at, meta) VALUES (?, 'adjustment', ?, ?, ?)"
     ).run(user.id, delta, now, "{\"source\":\"seed_balance_upgrade\",\"target\":2000}");
   }
 }
 
-function ensureMarket(createdBy: number, market: SeedMarket) {
-  const existing = db
+async function ensureMarket(createdBy: number, market: SeedMarket) {
+  const existing = (await db
     .query("SELECT id FROM markets WHERE title = ?")
-    .get(market.title) as { id: number } | null;
+    .get(market.title)) as { id: number } | null;
 
   if (existing) {
     return existing.id;
   }
 
   const createdAt = nowIso();
-  const created = db
-    .query("INSERT INTO markets (title, description, status, created_by, created_at) VALUES (?, ?, 'active', ?, ?)")
-    .run(market.title, market.description, createdBy, createdAt);
-
-  const marketId = Number(created.lastInsertRowid);
+  const marketId = await insertAndGetId(
+    "INSERT INTO markets (title, description, status, created_by, created_at) VALUES (?, ?, 'active', ?, ?)",
+    market.title,
+    market.description,
+    createdBy,
+    createdAt
+  );
 
   for (const label of market.outcomes) {
-    db.query("INSERT INTO outcomes (market_id, label, total_amount_staked) VALUES (?, ?, 0)").run(marketId, label);
+    await db.query("INSERT INTO outcomes (market_id, label, total_amount_staked) VALUES (?, ?, 0)").run(marketId, label);
   }
 
   return marketId;
 }
 
-function getOutcomeIdByLabel(marketId: number, label: string) {
-  const row = db
+async function getOutcomeIdByLabel(marketId: number, label: string) {
+  const row = (await db
     .query("SELECT id FROM outcomes WHERE market_id = ? AND label = ?")
-    .get(marketId, label) as { id: number } | null;
+    .get(marketId, label)) as { id: number } | null;
 
   return row?.id ?? null;
 }
 
-function placeSeedBet(userId: number, marketId: number, outcomeId: number, amount: number) {
-  const user = db.query("SELECT balance FROM users WHERE id = ?").get(userId) as { balance: number } | null;
+async function placeSeedBet(userId: number, marketId: number, outcomeId: number, amount: number) {
+  const user = (await db.query("SELECT balance FROM users WHERE id = ?").get(userId)) as { balance: number } | null;
   if (!user || user.balance < amount) {
     return false;
   }
 
-  const market = db.query("SELECT status FROM markets WHERE id = ?").get(marketId) as { status: string } | null;
+  const market = (await db.query("SELECT status FROM markets WHERE id = ?").get(marketId)) as {
+    status: string;
+  } | null;
   if (!market || market.status !== "active") {
     return false;
   }
 
-  const hasMarketBet = db
+  const hasMarketBet = (await db
     .query("SELECT 1 as value FROM bets WHERE user_id = ? AND market_id = ? LIMIT 1")
-    .get(userId, marketId) as { value: number } | null;
+    .get(userId, marketId)) as { value: number } | null;
 
   const createdAt = nowIso();
 
-  db.query("UPDATE users SET balance = balance - ? WHERE id = ?").run(amount, userId);
+  await db.query("UPDATE users SET balance = balance - ? WHERE id = ?").run(amount, userId);
 
-  const bet = db
-    .query(
-      "INSERT INTO bets (user_id, market_id, outcome_id, amount, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)"
-    )
-    .run(userId, marketId, outcomeId, amount, createdAt);
+  const betId = await insertAndGetId(
+    "INSERT INTO bets (user_id, market_id, outcome_id, amount, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)",
+    userId,
+    marketId,
+    outcomeId,
+    amount,
+    createdAt
+  );
 
-  const betId = Number(bet.lastInsertRowid);
+  await db.query("UPDATE outcomes SET total_amount_staked = total_amount_staked + ? WHERE id = ?").run(amount, outcomeId);
 
-  db.query("UPDATE outcomes SET total_amount_staked = total_amount_staked + ? WHERE id = ?").run(amount, outcomeId);
-
-  db.query(
+  await db.query(
     `UPDATE markets
      SET total_pool = total_pool + ?,
          participant_count = participant_count + ?
      WHERE id = ?`
   ).run(amount, hasMarketBet ? 0 : 1, marketId);
 
-  db.query(
+  await db.query(
     "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'bet_placed', ?, ?, ?, ?, ?)"
   ).run(userId, -amount, marketId, betId, createdAt, "{\"source\":\"seed\"}");
 
   return true;
+}
+
+async function insertAndGetId(sqlText: string, ...params: unknown[]) {
+  if (db.provider === "postgres") {
+    const row = (await db.query(`${sqlText} RETURNING id`).get(...params)) as { id: number } | null;
+    if (!row) {
+      throw new Error("Failed to obtain inserted id");
+    }
+    return Number(row.id);
+  }
+
+  const result = await db.query(sqlText).run(...params);
+  return Number(result.lastInsertRowid);
 }
 
 function randomInt(min: number, max: number) {
@@ -138,6 +156,8 @@ function randomInt(min: number, max: number) {
 }
 
 async function run() {
+  await initSchema();
+
   const adminId = await ensureUser({
     username: "admin",
     email: "admin@example.com",
@@ -485,11 +505,11 @@ async function run() {
 
   const marketIds: number[] = [];
   for (const market of marketsToEnsure) {
-    marketIds.push(ensureMarket(adminId, market));
+    marketIds.push(await ensureMarket(adminId, market));
   }
 
   for (const marketId of marketIds) {
-    const existingBets = db.query("SELECT COUNT(*) as total FROM bets WHERE market_id = ?").get(marketId) as {
+    const existingBets = (await db.query("SELECT COUNT(*) as total FROM bets WHERE market_id = ?").get(marketId)) as {
       total: number;
     };
 
@@ -497,44 +517,46 @@ async function run() {
       continue;
     }
 
-    const outcomes = db
+    const outcomes = (await db
       .query("SELECT id, label FROM outcomes WHERE market_id = ? ORDER BY id ASC")
-      .all(marketId) as Array<{ id: number; label: string }>;
+      .all(marketId)) as Array<{ id: number; label: string }>;
 
     const picks = randomInt(3, 7);
     for (let i = 0; i < picks; i++) {
       const userId = userIds[randomInt(0, userIds.length - 1)];
       const outcome = outcomes[randomInt(0, outcomes.length - 1)];
       const amount = randomInt(20, 180);
-      placeSeedBet(userId, marketId, outcome.id, amount);
+      await placeSeedBet(userId, marketId, outcome.id, amount);
     }
 
     if (outcomes.length > 0) {
       const forcedUser = userIds[randomInt(0, userIds.length - 1)];
       const outcome = outcomes[0];
-      placeSeedBet(forcedUser, marketId, outcome.id, randomInt(30, 90));
+      await placeSeedBet(forcedUser, marketId, outcome.id, randomInt(30, 90));
     }
   }
 
-  const sampleMarketId = ensureMarket(adminId, {
+  const sampleMarketId = await ensureMarket(adminId, {
     title: "Will Bun dominate JS runtime usage in 2026?",
     description: "Simple demo market so reviewers can place bets immediately.",
     outcomes: ["Yes", "No"],
   });
 
-  const sampleBetCount = db.query("SELECT COUNT(*) as total FROM bets WHERE market_id = ?").get(sampleMarketId) as {
+  const sampleBetCount = (await db
+    .query("SELECT COUNT(*) as total FROM bets WHERE market_id = ?")
+    .get(sampleMarketId)) as {
     total: number;
   };
   if (Number(sampleBetCount.total) === 0) {
-    const yesId = getOutcomeIdByLabel(sampleMarketId, "Yes");
-    const noId = getOutcomeIdByLabel(sampleMarketId, "No");
+    const yesId = await getOutcomeIdByLabel(sampleMarketId, "Yes");
+    const noId = await getOutcomeIdByLabel(sampleMarketId, "No");
     if (yesId && noId) {
-      placeSeedBet(userIds[0], sampleMarketId, yesId, 75);
-      placeSeedBet(userIds[1], sampleMarketId, noId, 50);
+      await placeSeedBet(userIds[0], sampleMarketId, yesId, 75);
+      await placeSeedBet(userIds[1], sampleMarketId, noId, 50);
     }
   }
 
-  raiseExistingBalancesToTarget(2000);
+  await raiseExistingBalancesToTarget(2000);
 
   console.log("Seed complete.");
   console.log("Admin: admin / admin123");
@@ -542,4 +564,7 @@ async function run() {
   console.log("Extra users password: demo1234");
 }
 
-run();
+run().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

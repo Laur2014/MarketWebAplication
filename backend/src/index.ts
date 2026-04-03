@@ -3,7 +3,7 @@ import { cors } from "@elysiajs/cors";
 import { db, initSchema, nowIso, withTransaction } from "./db";
 import {
   clearSession,
-  createSession,
+  createSessionAsync,
   generateApiKey,
   getSessionTokenFromContext,
   hashApiKey,
@@ -21,8 +21,6 @@ import {
   parsePagination,
   parsePositiveNumber,
 } from "./utils";
-
-initSchema();
 
 type MarketRow = {
   id: number;
@@ -45,19 +43,19 @@ type OutcomeRow = {
   totalAmountStaked: number;
 };
 
-function getOutcomesForMarket(marketId: number) {
-  return db
+async function getOutcomesForMarket(marketId: number) {
+  return (await db
     .query(
       `SELECT id, market_id as marketId, label, total_amount_staked as totalAmountStaked
        FROM outcomes
        WHERE market_id = ?
        ORDER BY id ASC`
     )
-    .all(marketId) as OutcomeRow[];
+    .all(marketId)) as OutcomeRow[];
 }
 
-function marketWithComputedFields(market: MarketRow) {
-  const outcomes = getOutcomesForMarket(market.id);
+async function marketWithComputedFields(market: MarketRow) {
+  const outcomes = await getOutcomesForMarket(market.id);
   const totalPool = Number(market.totalPool || 0);
 
   const mappedOutcomes = outcomes.map((outcome) => ({
@@ -82,8 +80,8 @@ function marketWithComputedFields(market: MarketRow) {
   };
 }
 
-function getMarketById(marketId: number) {
-  const market = db
+async function getMarketById(marketId: number) {
+  const market = (await db
     .query(
       `SELECT id, title, description, status, created_by as createdBy, winning_outcome_id as winningOutcomeId,
               total_pool as totalPool, participant_count as participantCount, created_at as createdAt,
@@ -91,7 +89,7 @@ function getMarketById(marketId: number) {
        FROM markets
        WHERE id = ?`
     )
-    .get(marketId) as MarketRow | null;
+    .get(marketId)) as MarketRow | null;
 
   if (!market) {
     return null;
@@ -100,8 +98,8 @@ function getMarketById(marketId: number) {
   return marketWithComputedFields(market);
 }
 
-function createMarketSnapshot(marketId: number, createdAt = nowIso()) {
-  const market = getMarketById(marketId);
+async function createMarketSnapshot(marketId: number, createdAt = nowIso()) {
+  const market = await getMarketById(marketId);
   if (!market) return;
 
   const snapshotPayload = {
@@ -116,26 +114,24 @@ function createMarketSnapshot(marketId: number, createdAt = nowIso()) {
     })),
   };
 
-  db.query("INSERT INTO market_snapshots (market_id, created_at, data_json) VALUES (?, ?, ?)").run(
+  await db.query("INSERT INTO market_snapshots (market_id, created_at, data_json) VALUES (?, ?, ?)").run(
     marketId,
     createdAt,
     JSON.stringify(snapshotPayload)
   );
 }
 
-function ensureHistoryBootstrapped() {
-  const marketRows = db.query("SELECT id FROM markets").all() as Array<{ id: number }>;
+async function ensureHistoryBootstrapped() {
+  const marketRows = (await db.query("SELECT id FROM markets").all()) as Array<{ id: number }>;
   for (const row of marketRows) {
-    const count = db
+    const count = (await db
       .query("SELECT COUNT(*) as total FROM market_snapshots WHERE market_id = ?")
-      .get(row.id) as { total: number };
+      .get(row.id)) as { total: number };
     if (!count || Number(count.total) === 0) {
-      createMarketSnapshot(row.id);
+      await createMarketSnapshot(row.id);
     }
   }
 }
-
-ensureHistoryBootstrapped();
 
 const SESSION_COOKIE_NAME = "pm_session";
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
@@ -175,6 +171,25 @@ function consumeRateLimit(request: Request, keyPrefix: string, limit: number) {
   return true;
 }
 
+async function insertAndGetId(sqlText: string, ...params: unknown[]) {
+  if (db.provider === "postgres") {
+    const queryWithReturning = sqlText.includes("RETURNING")
+      ? sqlText
+      : `${sqlText} RETURNING id`;
+    const inserted = (await db.query(queryWithReturning).get(...params)) as { id: number } | null;
+    if (!inserted) {
+      throw new Error("Could not fetch inserted id");
+    }
+    return Number(inserted.id);
+  }
+
+  const result = await db.query(sqlText).run(...params);
+  return Number(result.lastInsertRowid);
+}
+
+await initSchema();
+await ensureHistoryBootstrapped();
+
 const app = new Elysia()
   .use(
     cors({
@@ -206,9 +221,9 @@ const app = new Elysia()
       return { error: "Password must be at least 6 characters" };
     }
 
-    const existing = db
+    const existing = (await db
       .query("SELECT id FROM users WHERE username = ? OR (? IS NOT NULL AND email = ?)")
-      .get(username, email, email) as { id: number } | null;
+      .get(username, email, email)) as { id: number } | null;
 
     if (existing) {
       set.status = 409;
@@ -218,17 +233,19 @@ const app = new Elysia()
     const passwordHash = await hashPassword(password);
     const createdAt = nowIso();
 
-    const result = db
-      .query("INSERT INTO users (username, email, password_hash, role, balance, created_at) VALUES (?, ?, ?, 'user', 1000, ?)")
-      .run(username, email, passwordHash, createdAt);
+    const userId = await insertAndGetId(
+      "INSERT INTO users (username, email, password_hash, role, balance, created_at) VALUES (?, ?, ?, 'user', 1000, ?)",
+      username,
+      email,
+      passwordHash,
+      createdAt
+    );
 
-    const userId = Number(result.lastInsertRowid);
-
-    db.query(
+    await db.query(
       "INSERT INTO transactions (user_id, type, amount, created_at, meta) VALUES (?, 'initial_balance', ?, ?, ?)"
     ).run(userId, 1000, createdAt, "{\"source\":\"register\"}");
 
-    const session = createSession(userId);
+    const session = await createSessionAsync(userId);
     setSessionCookie(set, session.token, session.expiresAt);
 
     return {
@@ -259,14 +276,14 @@ const app = new Elysia()
       return { error: "Username and password are required" };
     }
 
-    const user = db
+    const user = (await db
       .query(
         `SELECT id, username, email, password_hash as passwordHash, role, balance,
                 total_winnings as totalWinnings, created_at as createdAt
          FROM users
          WHERE username = ?`
       )
-      .get(username) as
+      .get(username)) as
       | {
           id: number;
           username: string;
@@ -290,7 +307,7 @@ const app = new Elysia()
       return { error: "Invalid credentials" };
     }
 
-    const session = createSession(user.id);
+    const session = await createSessionAsync(user.id);
     setSessionCookie(set, session.token, session.expiresAt);
 
     return {
@@ -306,17 +323,17 @@ const app = new Elysia()
       },
     };
   })
-  .post("/auth/logout", ({ request, set }) => {
+  .post("/auth/logout", async ({ request, set }) => {
     const sessionToken = getSessionTokenFromContext({ request });
     if (sessionToken) {
-      clearSession(sessionToken);
+      await clearSession(sessionToken);
     }
 
     clearSessionCookie(set);
     return { success: true };
   })
   .post("/admin/users", async ({ body, request, set }) => {
-    const authResult = requireAdmin({ request, set });
+    const authResult = await requireAdmin({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -337,9 +354,9 @@ const app = new Elysia()
       return { error: "Password must be at least 6 characters" };
     }
 
-    const existing = db
+    const existing = (await db
       .query("SELECT id FROM users WHERE username = ? OR (? IS NOT NULL AND email = ?)")
-      .get(username, email, email) as { id: number } | null;
+      .get(username, email, email)) as { id: number } | null;
 
     if (existing) {
       set.status = 409;
@@ -350,13 +367,17 @@ const app = new Elysia()
     const createdAt = nowIso();
     const initialBalance = 1000;
 
-    const result = db
-      .query("INSERT INTO users (username, email, password_hash, role, balance, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(username, email, passwordHash, role, initialBalance, createdAt);
+    const userId = await insertAndGetId(
+      "INSERT INTO users (username, email, password_hash, role, balance, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      username,
+      email,
+      passwordHash,
+      role,
+      initialBalance,
+      createdAt
+    );
 
-    const userId = Number(result.lastInsertRowid);
-
-    db.query(
+    await db.query(
       "INSERT INTO transactions (user_id, type, amount, created_at, meta) VALUES (?, 'initial_balance', ?, ?, ?)"
     ).run(userId, initialBalance, createdAt, `{"source":"admin_create","createdBy":${authResult.id}}`);
 
@@ -373,21 +394,21 @@ const app = new Elysia()
       },
     };
   })
-  .get("/me", ({ request, set }) => {
-    const authResult = requireUser({ request, set });
+  .get("/me", async ({ request, set }) => {
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
 
     return { user: authResult };
   })
-  .post("/me/api-key", ({ request, set }) => {
+  .post("/me/api-key", async ({ request, set }) => {
     if (!consumeRateLimit(request, "api-key:generate", 30)) {
       set.status = 429;
       return { error: "Too many API key requests. Please try again later." };
     }
 
-    const authResult = requireUser({ request, set });
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -395,27 +416,27 @@ const app = new Elysia()
     const rawApiKey = generateApiKey();
     const hash = hashApiKey(rawApiKey);
 
-    db.query("UPDATE users SET api_key_hash = ? WHERE id = ?").run(hash, authResult.id);
+    await db.query("UPDATE users SET api_key_hash = ? WHERE id = ?").run(hash, authResult.id);
 
     return { apiKey: rawApiKey };
   })
-  .delete("/me/api-key", ({ request, set }) => {
+  .delete("/me/api-key", async ({ request, set }) => {
     if (!consumeRateLimit(request, "api-key:revoke", 30)) {
       set.status = 429;
       return { error: "Too many API key requests. Please try again later." };
     }
 
-    const authResult = requireUser({ request, set });
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
 
-    db.query("UPDATE users SET api_key_hash = NULL WHERE id = ?").run(authResult.id);
+    await db.query("UPDATE users SET api_key_hash = NULL WHERE id = ?").run(authResult.id);
 
     return { success: true };
   })
-  .get("/me/bets/active", ({ request, set }) => {
-    const authResult = requireUser({ request, set });
+  .get("/me/bets/active", async ({ request, set }) => {
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -423,11 +444,11 @@ const app = new Elysia()
     const url = new URL(request.url);
     const { page, limit, offset } = parsePagination(url.searchParams);
 
-    const totalCountRow = db
+    const totalCountRow = (await db
       .query("SELECT COUNT(*) as total FROM bets WHERE user_id = ? AND status = 'active'")
-      .get(authResult.id) as { total: number };
+      .get(authResult.id)) as { total: number };
 
-    const rows = db
+    const rows = (await db
       .query(
         `SELECT b.id, b.amount, b.created_at as createdAt,
                 m.id as marketId, m.title as marketTitle, m.status as marketStatus,
@@ -440,7 +461,7 @@ const app = new Elysia()
          ORDER BY b.created_at DESC
          LIMIT ? OFFSET ?`
       )
-      .all(authResult.id, limit, offset) as Array<{
+      .all(authResult.id, limit, offset)) as Array<{
       id: number;
       amount: number;
       createdAt: string;
@@ -472,8 +493,8 @@ const app = new Elysia()
 
     return paginatedResponse(items, page, limit, Number(totalCountRow.total || 0));
   })
-  .get("/me/bets/resolved", ({ request, set }) => {
-    const authResult = requireUser({ request, set });
+  .get("/me/bets/resolved", async ({ request, set }) => {
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -481,11 +502,11 @@ const app = new Elysia()
     const url = new URL(request.url);
     const { page, limit, offset } = parsePagination(url.searchParams);
 
-    const totalCountRow = db
+    const totalCountRow = (await db
       .query("SELECT COUNT(*) as total FROM bets WHERE user_id = ? AND status IN ('won', 'lost', 'refunded')")
-      .get(authResult.id) as { total: number };
+      .get(authResult.id)) as { total: number };
 
-    const rows = db
+    const rows = (await db
       .query(
         `SELECT b.id, b.amount, b.status, b.payout_amount as payoutAmount, b.refunded_amount as refundedAmount,
                 b.created_at as createdAt, b.resolved_at as resolvedAt,
@@ -498,7 +519,7 @@ const app = new Elysia()
          ORDER BY COALESCE(b.resolved_at, b.created_at) DESC
          LIMIT ? OFFSET ?`
       )
-      .all(authResult.id, limit, offset) as Array<{
+      .all(authResult.id, limit, offset)) as Array<{
       id: number;
       amount: number;
       status: "won" | "lost" | "refunded";
@@ -533,8 +554,8 @@ const app = new Elysia()
 
     return paginatedResponse(items, page, limit, Number(totalCountRow.total || 0));
   })
-  .get("/me/markets/resolved-by-me", ({ request, set }) => {
-    const authResult = requireUser({ request, set });
+  .get("/me/markets/resolved-by-me", async ({ request, set }) => {
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -547,11 +568,11 @@ const app = new Elysia()
     const url = new URL(request.url);
     const { page, limit, offset } = parsePagination(url.searchParams);
 
-    const totalCountRow = db
+    const totalCountRow = (await db
       .query("SELECT COUNT(*) as total FROM markets WHERE status = 'resolved' AND resolved_by = ?")
-      .get(authResult.id) as { total: number };
+      .get(authResult.id)) as { total: number };
 
-    const rows = db
+    const rows = (await db
       .query(
         `SELECT m.id as marketId, m.title as marketTitle, m.resolved_at as resolvedAt, m.total_pool as totalPool,
                 o.id as winningOutcomeId, o.label as winningOutcomeLabel
@@ -561,7 +582,7 @@ const app = new Elysia()
          ORDER BY m.resolved_at DESC
          LIMIT ? OFFSET ?`
       )
-      .all(authResult.id, limit, offset) as Array<{
+      .all(authResult.id, limit, offset)) as Array<{
       marketId: number;
       marketTitle: string;
       resolvedAt: string | null;
@@ -585,7 +606,7 @@ const app = new Elysia()
 
     return paginatedResponse(items, page, limit, Number(totalCountRow.total || 0));
   })
-  .get("/markets", ({ request, set }) => {
+  .get("/markets", async ({ request, set }) => {
     const url = new URL(request.url);
     const { page, limit, offset } = parsePagination(url.searchParams);
     const status = (url.searchParams.get("status") || "all").toLowerCase();
@@ -607,8 +628,10 @@ const app = new Elysia()
     }
 
     const countRow = whereStatus
-      ? (db.query("SELECT COUNT(*) as total FROM markets WHERE status = ?").get(whereStatus) as { total: number })
-      : (db.query("SELECT COUNT(*) as total FROM markets").get() as { total: number });
+      ? ((await db.query("SELECT COUNT(*) as total FROM markets WHERE status = ?").get(whereStatus)) as {
+          total: number;
+        })
+      : ((await db.query("SELECT COUNT(*) as total FROM markets").get()) as { total: number });
 
     const querySql = whereStatus
       ? `SELECT id, title, description, status, created_by as createdBy, winning_outcome_id as winningOutcomeId,
@@ -625,16 +648,16 @@ const app = new Elysia()
          ORDER BY ${sortColumn} ${order}, id DESC
          LIMIT ? OFFSET ?`;
 
-    const rows = (whereStatus
-      ? db.query(querySql).all(whereStatus, limit, offset)
-      : db.query(querySql).all(limit, offset)) as MarketRow[];
+    const rows = ((whereStatus
+      ? await db.query(querySql).all(whereStatus, limit, offset)
+      : await db.query(querySql).all(limit, offset)) as MarketRow[]) || [];
 
-    const items = rows.map((market) => marketWithComputedFields(market));
+    const items = await Promise.all(rows.map((market) => marketWithComputedFields(market)));
 
     return paginatedResponse(items, page, limit, Number(countRow.total || 0));
   })
-  .post("/markets", ({ body, request, set }) => {
-    const authResult = requireUser({ request, set });
+  .post("/markets", async ({ body, request, set }) => {
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -662,34 +685,36 @@ const app = new Elysia()
 
     const createdAt = nowIso();
 
-    const result = withTransaction(() => {
-      const marketInsert = db
-        .query(
-          "INSERT INTO markets (title, description, status, created_by, created_at) VALUES (?, ?, 'active', ?, ?)"
-        )
-        .run(title, description, authResult.id, createdAt);
-
-      const marketId = Number(marketInsert.lastInsertRowid);
+    const result = await withTransaction(async () => {
+      const marketId = await insertAndGetId(
+        "INSERT INTO markets (title, description, status, created_by, created_at) VALUES (?, ?, 'active', ?, ?)",
+        title,
+        description,
+        authResult.id,
+        createdAt
+      );
       for (const label of outcomes) {
-        db.query("INSERT INTO outcomes (market_id, label, total_amount_staked) VALUES (?, ?, 0)").run(marketId, label);
+        await db
+          .query("INSERT INTO outcomes (market_id, label, total_amount_staked) VALUES (?, ?, 0)")
+          .run(marketId, label);
       }
 
       return marketId;
     });
 
-    createMarketSnapshot(result);
+    await createMarketSnapshot(result);
 
     set.status = 201;
-    return { market: getMarketById(result) };
+    return { market: await getMarketById(result) };
   })
-  .get("/markets/:marketId", ({ params, set }) => {
+  .get("/markets/:marketId", async ({ params, set }) => {
     const marketId = Number(params.marketId);
     if (!Number.isInteger(marketId) || marketId <= 0) {
       set.status = 400;
       return { error: "Invalid market id" };
     }
 
-    const market = getMarketById(marketId);
+    const market = await getMarketById(marketId);
     if (!market) {
       set.status = 404;
       return { error: "Market not found" };
@@ -697,14 +722,14 @@ const app = new Elysia()
 
     return { market };
   })
-  .get("/markets/:marketId/history", ({ params, request, set }) => {
+  .get("/markets/:marketId/history", async ({ params, request, set }) => {
     const marketId = Number(params.marketId);
     if (!Number.isInteger(marketId) || marketId <= 0) {
       set.status = 400;
       return { error: "Invalid market id" };
     }
 
-    const market = getMarketById(marketId);
+    const market = await getMarketById(marketId);
     if (!market) {
       set.status = 404;
       return { error: "Market not found" };
@@ -723,7 +748,7 @@ const app = new Elysia()
     const toDate = new Date();
     const fromDate = new Date(toDate.getTime() - duration);
 
-    const before = db
+    const before = (await db
       .query(
         `SELECT created_at as createdAt, data_json as dataJson
          FROM market_snapshots
@@ -731,16 +756,19 @@ const app = new Elysia()
          ORDER BY created_at DESC
          LIMIT 1`
       )
-      .get(marketId, fromDate.toISOString()) as { createdAt: string; dataJson: string } | null;
+      .get(marketId, fromDate.toISOString())) as { createdAt: string; dataJson: string } | null;
 
-    const rows = db
+    const rows = (await db
       .query(
         `SELECT created_at as createdAt, data_json as dataJson
          FROM market_snapshots
          WHERE market_id = ? AND created_at >= ? AND created_at <= ?
          ORDER BY created_at ASC`
       )
-      .all(marketId, fromDate.toISOString(), toDate.toISOString()) as Array<{ createdAt: string; dataJson: string }>;
+      .all(marketId, fromDate.toISOString(), toDate.toISOString())) as Array<{
+      createdAt: string;
+      dataJson: string;
+    }>;
 
     const combinedRows = before ? [before, ...rows] : rows;
 
@@ -760,8 +788,8 @@ const app = new Elysia()
       snapshots,
     };
   })
-  .post("/markets/:marketId/bets", ({ params, body, request, set }) => {
-    const authResult = requireUser({ request, set });
+  .post("/markets/:marketId/bets", async ({ params, body, request, set }) => {
+    const authResult = await requireUser({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -792,10 +820,10 @@ const app = new Elysia()
     }
 
     try {
-      const result = withTransaction(() => {
-        const market = db
+      const result = await withTransaction(async () => {
+        const market = (await db
           .query("SELECT id, status FROM markets WHERE id = ?")
-          .get(marketId) as { id: number; status: string } | null;
+          .get(marketId)) as { id: number; status: string } | null;
 
         if (!market) {
           throw new Error("Market not found");
@@ -805,86 +833,87 @@ const app = new Elysia()
           throw new Error("Bets can only be placed on active markets");
         }
 
-        const outcome = db
+        const outcome = (await db
           .query("SELECT id FROM outcomes WHERE id = ? AND market_id = ?")
-          .get(outcomeId, marketId) as { id: number } | null;
+          .get(outcomeId, marketId)) as { id: number } | null;
 
         if (!outcome) {
           throw new Error("Outcome does not belong to this market");
         }
 
-        const currentUser = db
+        const currentUser = (await db
           .query("SELECT balance FROM users WHERE id = ?")
-          .get(authResult.id) as { balance: number } | null;
+          .get(authResult.id)) as { balance: number } | null;
 
         const currentBalanceCents = currentUser ? dollarsToCents(currentUser.balance) : 0;
         if (!currentUser || currentBalanceCents < amountCents) {
           throw new Error("Insufficient balance");
         }
 
-        const hadParticipation = db
+        const hadParticipation = (await db
           .query("SELECT 1 as value FROM bets WHERE user_id = ? AND market_id = ? LIMIT 1")
-          .get(authResult.id, marketId) as { value: number } | null;
+          .get(authResult.id, marketId)) as { value: number } | null;
 
         const updatedBalance = centsToDollars(currentBalanceCents - amountCents);
-        db.query("UPDATE users SET balance = ? WHERE id = ?").run(updatedBalance, authResult.id);
+        await db.query("UPDATE users SET balance = ? WHERE id = ?").run(updatedBalance, authResult.id);
 
         const createdAt = nowIso();
-        const betInsert = db
-          .query(
-            "INSERT INTO bets (user_id, market_id, outcome_id, amount, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)"
-          )
-          .run(authResult.id, marketId, outcomeId, centsToDollars(amountCents), createdAt);
+        const betId = await insertAndGetId(
+          "INSERT INTO bets (user_id, market_id, outcome_id, amount, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)",
+          authResult.id,
+          marketId,
+          outcomeId,
+          centsToDollars(amountCents),
+          createdAt
+        );
 
-        const betId = Number(betInsert.lastInsertRowid);
-
-        db.query("UPDATE outcomes SET total_amount_staked = total_amount_staked + ? WHERE id = ?").run(
+        await db.query("UPDATE outcomes SET total_amount_staked = total_amount_staked + ? WHERE id = ?").run(
           centsToDollars(amountCents),
           outcomeId
         );
 
-        db.query(
+        await db.query(
           `UPDATE markets
            SET total_pool = total_pool + ?,
                participant_count = participant_count + ?
            WHERE id = ?`
         ).run(centsToDollars(amountCents), hadParticipation ? 0 : 1, marketId);
 
-        db.query(
+        await db.query(
           "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'bet_placed', ?, ?, ?, ?, ?)"
         ).run(authResult.id, -centsToDollars(amountCents), marketId, betId, createdAt, "{\"reason\":\"bet placed\"}");
 
         return { betId, createdAt };
       });
 
-      createMarketSnapshot(marketId, result.createdAt);
+      await createMarketSnapshot(marketId, result.createdAt);
 
       return {
         success: true,
         betId: result.betId,
-        market: getMarketById(marketId),
+        market: await getMarketById(marketId),
       };
     } catch (error) {
       set.status = 400;
       return { error: error instanceof Error ? error.message : "Could not place bet" };
     }
   })
-  .get("/leaderboard", () => {
-    const rows = db
+  .get("/leaderboard", async () => {
+    const rows = (await db
       .query(
         `SELECT id, username, total_winnings as totalWinnings
          FROM users
          WHERE role = 'user'
          ORDER BY total_winnings DESC, username ASC`
       )
-      .all() as Array<{ id: number; username: string; totalWinnings: number }>;
+      .all()) as Array<{ id: number; username: string; totalWinnings: number }>;
 
     return {
       items: rows,
     };
   })
-  .post("/admin/markets/:marketId/resolve", ({ params, body, request, set }) => {
-    const authResult = requireAdmin({ request, set });
+  .post("/admin/markets/:marketId/resolve", async ({ params, body, request, set }) => {
+    const authResult = await requireAdmin({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -899,12 +928,17 @@ const app = new Elysia()
     }
 
     try {
-      const response = withTransaction(() => {
-        const market = db
+      const response = await withTransaction(async () => {
+        const market = (await db
           .query(
             "SELECT id, status, total_pool as totalPool, payout_distributed as payoutDistributed FROM markets WHERE id = ?"
           )
-          .get(marketId) as { id: number; status: string; totalPool: number; payoutDistributed: number } | null;
+          .get(marketId)) as {
+          id: number;
+          status: string;
+          totalPool: number;
+          payoutDistributed: number | boolean;
+        } | null;
 
         if (!market) {
           throw new Error("Market not found");
@@ -914,21 +948,21 @@ const app = new Elysia()
           throw new Error("Only active markets can be resolved");
         }
 
-        const outcome = db
+        const outcome = (await db
           .query("SELECT id FROM outcomes WHERE id = ? AND market_id = ?")
-          .get(winningOutcomeId, marketId) as { id: number } | null;
+          .get(winningOutcomeId, marketId)) as { id: number } | null;
 
         if (!outcome) {
           throw new Error("Winning outcome does not belong to this market");
         }
 
-        const bets = db
+        const bets = (await db
           .query(
             `SELECT id, user_id as userId, amount, outcome_id as outcomeId
              FROM bets
              WHERE market_id = ? AND status = 'active'`
           )
-          .all(marketId) as Array<{ id: number; userId: number; amount: number; outcomeId: number }>;
+          .all(marketId)) as Array<{ id: number; userId: number; amount: number; outcomeId: number }>;
 
         const totalPoolCents = dollarsToCents(Number(market.totalPool || 0));
         const winners = bets
@@ -938,13 +972,13 @@ const app = new Elysia()
         const totalWinningStakeCents = winners.reduce((acc, bet) => acc + bet.amountCents, 0);
         const resolvedAt = nowIso();
 
-        db.query(
+        await db.query(
           `UPDATE markets
            SET status = 'resolved', winning_outcome_id = ?, resolved_at = ?, resolved_by = ?
            WHERE id = ?`
         ).run(winningOutcomeId, resolvedAt, authResult.id, marketId);
 
-        if (totalWinningStakeCents > 0 && market.payoutDistributed === 0) {
+        if (totalWinningStakeCents > 0 && !market.payoutDistributed) {
           const rawShares = winners.map((winner) => {
             const numerator = winner.amountCents * totalPoolCents;
             const payoutCents = Math.floor(numerator / totalWinningStakeCents);
@@ -961,9 +995,9 @@ const app = new Elysia()
           distributed = rawShares.reduce((sum, item) => sum + item.payoutCents, 0);
 
           for (const { winner, payoutCents } of rawShares) {
-            const user = db
+            const user = (await db
               .query("SELECT balance, total_winnings as totalWinnings FROM users WHERE id = ?")
-              .get(winner.userId) as { balance: number; totalWinnings: number } | null;
+              .get(winner.userId)) as { balance: number; totalWinnings: number } | null;
 
             if (!user) {
               throw new Error("Winner user not found");
@@ -973,19 +1007,19 @@ const app = new Elysia()
             const netWinningsCents = Math.max(0, payoutCents - winner.amountCents);
             const nextTotalWinnings = centsToDollars(dollarsToCents(user.totalWinnings) + netWinningsCents);
 
-            db.query("UPDATE users SET balance = ?, total_winnings = ? WHERE id = ?").run(
+            await db.query("UPDATE users SET balance = ?, total_winnings = ? WHERE id = ?").run(
               nextBalance,
               nextTotalWinnings,
               winner.userId
             );
 
-            db.query("UPDATE bets SET status = 'won', payout_amount = ?, resolved_at = ? WHERE id = ?").run(
+            await db.query("UPDATE bets SET status = 'won', payout_amount = ?, resolved_at = ? WHERE id = ?").run(
               centsToDollars(payoutCents),
               resolvedAt,
               winner.id
             );
 
-            db.query(
+            await db.query(
               "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'payout', ?, ?, ?, ?, ?)"
             ).run(
               winner.userId,
@@ -999,16 +1033,16 @@ const app = new Elysia()
         }
 
         for (const loser of losers) {
-          db.query("UPDATE bets SET status = 'lost', resolved_at = ? WHERE id = ?").run(resolvedAt, loser.id);
+          await db.query("UPDATE bets SET status = 'lost', resolved_at = ? WHERE id = ?").run(resolvedAt, loser.id);
         }
 
         if (totalWinningStakeCents === 0) {
           for (const noWinnerBet of winners) {
-            db.query("UPDATE bets SET status = 'lost', resolved_at = ? WHERE id = ?").run(resolvedAt, noWinnerBet.id);
+            await db.query("UPDATE bets SET status = 'lost', resolved_at = ? WHERE id = ?").run(resolvedAt, noWinnerBet.id);
           }
         }
 
-        db.query("UPDATE markets SET payout_distributed = 1 WHERE id = ?").run(marketId);
+        await db.query("UPDATE markets SET payout_distributed = 1 WHERE id = ?").run(marketId);
 
         return {
           message:
@@ -1021,19 +1055,19 @@ const app = new Elysia()
         };
       });
 
-      createMarketSnapshot(marketId);
+      await createMarketSnapshot(marketId);
 
       return {
         ...response,
-        market: getMarketById(marketId),
+        market: await getMarketById(marketId),
       };
     } catch (error) {
       set.status = 400;
       return { error: error instanceof Error ? error.message : "Could not resolve market" };
     }
   })
-  .post("/admin/markets/:marketId/archive", ({ params, request, set }) => {
-    const authResult = requireAdmin({ request, set });
+  .post("/admin/markets/:marketId/archive", async ({ params, request, set }) => {
+    const authResult = await requireAdmin({ request, set });
     if (isAuthError(authResult)) {
       return authResult;
     }
@@ -1046,20 +1080,20 @@ const app = new Elysia()
     }
 
     try {
-      const result = withTransaction(() => {
-        const market = db
+      const result = await withTransaction(async () => {
+        const market = (await db
           .query(
             `SELECT id, status, winning_outcome_id as winningOutcomeId,
                     archived_at as archivedAt, refund_distributed as refundDistributed
              FROM markets
              WHERE id = ?`
           )
-          .get(marketId) as {
+          .get(marketId)) as {
           id: number;
           status: "active" | "resolved" | "archived";
           winningOutcomeId: number | null;
           archivedAt: string | null;
-          refundDistributed: number;
+          refundDistributed: number | boolean;
         } | null;
 
         if (!market) {
@@ -1074,40 +1108,42 @@ const app = new Elysia()
         const shouldRefundResolvedNoWinners =
           market.status === "resolved" &&
           market.winningOutcomeId !== null &&
-          (db
+          ((await db
             .query("SELECT COUNT(*) as total FROM bets WHERE market_id = ? AND status = 'won'")
-            .get(marketId) as { total: number }).total === 0;
+            .get(marketId)) as { total: number }).total === 0;
 
         let refundableBets: Array<{ id: number; userId: number; amount: number }> = [];
 
-        if (shouldRefundActive && market.refundDistributed === 0) {
-          refundableBets = db
+        if (shouldRefundActive && !market.refundDistributed) {
+          refundableBets = (await db
             .query("SELECT id, user_id as userId, amount FROM bets WHERE market_id = ? AND status = 'active'")
-            .all(marketId) as Array<{ id: number; userId: number; amount: number }>;
+            .all(marketId)) as Array<{ id: number; userId: number; amount: number }>;
         }
 
-        if (shouldRefundResolvedNoWinners && market.refundDistributed === 0) {
-          refundableBets = db
+        if (shouldRefundResolvedNoWinners && !market.refundDistributed) {
+          refundableBets = (await db
             .query("SELECT id, user_id as userId, amount FROM bets WHERE market_id = ? AND status = 'lost'")
-            .all(marketId) as Array<{ id: number; userId: number; amount: number }>;
+            .all(marketId)) as Array<{ id: number; userId: number; amount: number }>;
         }
 
         const archivedAt = nowIso();
 
         if (refundableBets.length > 0) {
           for (const bet of refundableBets) {
-            const user = db.query("SELECT balance FROM users WHERE id = ?").get(bet.userId) as { balance: number } | null;
+            const user = (await db.query("SELECT balance FROM users WHERE id = ?").get(bet.userId)) as {
+              balance: number;
+            } | null;
             if (!user) {
               throw new Error("User not found for refund");
             }
             const nextBalance = centsToDollars(dollarsToCents(user.balance) + dollarsToCents(bet.amount));
-            db.query("UPDATE users SET balance = ? WHERE id = ?").run(nextBalance, bet.userId);
-            db.query("UPDATE bets SET status = 'refunded', refunded_amount = ?, resolved_at = ? WHERE id = ?").run(
+            await db.query("UPDATE users SET balance = ? WHERE id = ?").run(nextBalance, bet.userId);
+            await db.query("UPDATE bets SET status = 'refunded', refunded_amount = ?, resolved_at = ? WHERE id = ?").run(
               centsToDollars(dollarsToCents(bet.amount)),
               archivedAt,
               bet.id
             );
-            db.query(
+            await db.query(
               "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'refund', ?, ?, ?, ?, ?)"
             ).run(
               bet.userId,
@@ -1120,7 +1156,7 @@ const app = new Elysia()
           }
         }
 
-        db.query(
+        await db.query(
           "UPDATE markets SET status = 'archived', archived_at = ?, refund_distributed = ? WHERE id = ?"
         ).run(archivedAt, refundableBets.length > 0 ? 1 : market.refundDistributed, marketId);
 
@@ -1132,12 +1168,12 @@ const app = new Elysia()
         };
       });
 
-      createMarketSnapshot(marketId);
+      await createMarketSnapshot(marketId);
 
       return {
         message: "Market archived",
         ...result,
-        market: getMarketById(marketId),
+        market: await getMarketById(marketId),
       };
     } catch (error) {
       set.status = 400;

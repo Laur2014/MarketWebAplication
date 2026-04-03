@@ -4,7 +4,7 @@ Prediction market web app for the Vertigo Internship 2026 challenge.
 
 ## Stack
 
-- Backend: Bun + Elysia + SQLite (`bun:sqlite`)
+- Backend: Bun + Elysia + dual DB support (`SQLite` local or `Postgres/Neon` via `DATABASE_URL`)
 - Frontend: React + Vite
 - Auth: server-side sessions (Bearer token and HttpOnly cookie) + optional API key support
 
@@ -46,6 +46,10 @@ Prediction market web app for the Vertigo Internship 2026 challenge.
 bun install
 ```
 
+### Local default (SQLite)
+
+No extra environment variables are required.
+
 3. Seed demo users and sample market:
 
 ```bash
@@ -60,6 +64,73 @@ bun run dev
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:3001`
+
+Frontend API base URL can be configured with:
+
+```bash
+# frontend/.env
+VITE_API_BASE_URL=http://localhost:3001
+```
+
+### Deploy / Neon (Postgres)
+
+Set these environment variables for backend:
+
+- `DATABASE_URL` = your Neon Postgres connection string
+- optional `DB_PROVIDER=postgres` (auto-detected when `DATABASE_URL` exists)
+- optional `PG_POOL_MAX=10`
+
+Then run:
+
+```bash
+bun run seed
+bun run dev:backend
+```
+
+## Simple Online Deployment (Free-ish setup)
+
+Recommended split:
+- Backend API: Render Web Service
+- Frontend: Cloudflare Pages
+- Database: Neon Postgres
+
+Environment variables:
+
+Backend (Render):
+- `PORT=3001`
+- `DATABASE_URL=<your_neon_connection_string>`
+- optional `DB_PROVIDER=postgres`
+- optional `PG_POOL_MAX=10`
+
+Frontend (Cloudflare Pages):
+- `VITE_API_BASE_URL=https://<your-render-service>.onrender.com`
+
+### Render quick config (Backend)
+
+- Service type: `Web Service` (Native runtime), **not Docker**
+- Root Directory: `backend`
+- Build Command: `bun install`
+- Start Command: `bun run start`
+- Region: same as Neon (recommended: Frankfurt)
+
+If Render Shell is unavailable on free tier, you can seed Neon from local machine:
+
+```powershell
+$env:DATABASE_URL="<your_neon_connection_string>"
+$env:DB_PROVIDER="postgres"
+bun run seed
+```
+
+Then trigger a backend redeploy from Render.
+
+### Cloudflare Pages quick config (Frontend)
+
+- Framework preset: `React (Vite)` (or `Vite`)
+- Root Directory: `frontend`
+- Build Command: `bun run build`
+- Build Output Directory: `dist`
+- Environment variable:
+  - `VITE_API_BASE_URL=https://<your-render-service>.onrender.com`
 
 ## Demo accounts
 
@@ -107,5 +178,6 @@ bun run dev
 - Polling interval for near real-time updates: 5 seconds.
 - Pagination is capped at 20 items per page.
 - Session duration is 14 days from login.
-- Database file is created at `backend/data/market.db`.
+- Local SQLite file is created at `backend/data/market.db`.
+- When `DATABASE_URL` is present, backend uses Postgres/Neon instead of local SQLite.
 - Challenge submission docs are in `submission/`.

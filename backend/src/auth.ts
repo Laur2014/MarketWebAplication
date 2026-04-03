@@ -30,18 +30,6 @@ export async function verifyPassword(password: string, hash: string) {
   return Bun.password.verify(password, hash);
 }
 
-export function createSession(userId: number) {
-  const token = randomBytes(32).toString("hex");
-  const createdAt = nowIso();
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-
-  db.query(
-    "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
-  ).run(token, userId, createdAt, expiresAt);
-
-  return { token, createdAt, expiresAt };
-}
-
 function parseCookies(cookieHeader: string | null) {
   if (!cookieHeader) return {};
   const cookies: Record<string, string> = {};
@@ -63,22 +51,34 @@ export function getSessionTokenFromContext(context: Pick<Context, "request">) {
   return cookies.pm_session || null;
 }
 
-export function clearSession(token: string) {
-  db.query("DELETE FROM sessions WHERE token = ?").run(token);
+export async function createSessionAsync(userId: number) {
+  const token = randomBytes(32).toString("hex");
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  await db
+    .query("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .run(token, userId, createdAt, expiresAt);
+
+  return { token, createdAt, expiresAt };
 }
 
-export function authFromContext(context: Pick<Context, "request">) {
+export async function clearSession(token: string) {
+  await db.query("DELETE FROM sessions WHERE token = ?").run(token);
+}
+
+export async function authFromContext(context: Pick<Context, "request">) {
   const apiKeyHeader = context.request.headers.get("x-api-key");
 
   if (apiKeyHeader) {
     const apiKeyHash = hashApiKey(apiKeyHeader);
-    const user = db
+    const user = (await db
       .query(
         `SELECT id, username, email, role, balance, total_winnings as totalWinnings, created_at as createdAt
          FROM users
          WHERE api_key_hash = ?`
       )
-      .get(apiKeyHash) as AuthUser | null;
+      .get(apiKeyHash)) as AuthUser | null;
 
     return user;
   }
@@ -87,31 +87,31 @@ export function authFromContext(context: Pick<Context, "request">) {
   if (!token) {
     return null;
   }
-  const session = db
+  const session = (await db
     .query(
       `SELECT s.user_id as userId
        FROM sessions s
        WHERE s.token = ? AND s.expires_at > ?`
     )
-    .get(token, nowIso()) as { userId: number } | null;
+    .get(token, nowIso())) as { userId: number } | null;
 
   if (!session) {
     return null;
   }
 
-  const user = db
+  const user = (await db
     .query(
       `SELECT id, username, email, role, balance, total_winnings as totalWinnings, created_at as createdAt
        FROM users
        WHERE id = ?`
     )
-    .get(session.userId) as AuthUser | null;
+    .get(session.userId)) as AuthUser | null;
 
   return user;
 }
 
-export function requireUser(context: Pick<Context, "request" | "set">) {
-  const user = authFromContext(context);
+export async function requireUser(context: Pick<Context, "request" | "set">) {
+  const user = await authFromContext(context);
 
   if (!user) {
     context.set.status = 401;
@@ -121,8 +121,8 @@ export function requireUser(context: Pick<Context, "request" | "set">) {
   return user;
 }
 
-export function requireAdmin(context: Pick<Context, "request" | "set">) {
-  const user = authFromContext(context);
+export async function requireAdmin(context: Pick<Context, "request" | "set">) {
+  const user = await authFromContext(context);
 
   if (!user) {
     context.set.status = 401;
