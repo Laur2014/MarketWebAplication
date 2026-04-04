@@ -280,6 +280,25 @@ option {
 .dashboard-right {
   max-height: calc(100vh - 6rem);
   overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(127, 225, 238, 0.35) transparent;
+}
+
+.dashboard-right::-webkit-scrollbar {
+  width: 8px;
+}
+
+.dashboard-right::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dashboard-right::-webkit-scrollbar-thumb {
+  background: rgba(127, 225, 238, 0.35);
+  border-radius: 999px;
+}
+
+.dashboard-right::-webkit-scrollbar-thumb:hover {
+  background: rgba(127, 225, 238, 0.5);
 }
 
 .market-grid {
