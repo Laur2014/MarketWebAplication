@@ -114,26 +114,28 @@ type HistorySnapshot = {
 
 function buildTrendData(outcomes: Outcome[], historySnapshots: HistorySnapshot[], range: TrendRange, nowMs: number) {
   const config = TREND_RANGE_CONFIG[range];
+  const currentSnapshot: HistorySnapshot = {
+    createdAt: new Date(nowMs).toISOString(),
+    totalPool: outcomes.reduce((sum, outcome) => sum + (outcome.stake || 0), 0),
+    status: "active",
+    outcomes: outcomes.map((outcome) => ({
+      id: outcome.id,
+      label: outcome.label,
+      percentage: outcome.percentage,
+      odds: outcome.odds,
+      stake: outcome.stake,
+    })),
+  };
+
   const sortedSnapshots = [...historySnapshots].sort(
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
   );
 
   const timeline =
     sortedSnapshots.length > 0
-      ? sortedSnapshots
+      ? [...sortedSnapshots, currentSnapshot]
       : [
-          {
-            createdAt: new Date(nowMs).toISOString(),
-            totalPool: 0,
-            status: "active",
-            outcomes: outcomes.map((outcome) => ({
-              id: outcome.id,
-              label: outcome.label,
-              percentage: outcome.percentage,
-              odds: outcome.odds,
-              stake: outcome.stake,
-            })),
-          },
+          currentSnapshot,
         ];
 
   const timestamps = timeline.map((snapshot) => new Date(snapshot.createdAt).getTime());
@@ -1368,7 +1370,7 @@ function AppShell({
 }
 
 export function App() {
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(() => localStorage.getItem("pm_token") || "");
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState<"light" | "dark">(
@@ -1376,12 +1378,14 @@ export function App() {
   );
 
   const onAuth = (newToken: string, authUser: User) => {
+    localStorage.setItem("pm_token", newToken);
     setToken(newToken);
     setUser(authUser);
   };
 
   const onLogout = () => {
     apiRequest("/auth/logout", { method: "POST" }, token).catch(() => null);
+    localStorage.removeItem("pm_token");
     setToken("");
     setUser(null);
   };
@@ -1403,6 +1407,7 @@ export function App() {
         await refreshMe();
       } catch {
         setUser(null);
+        localStorage.removeItem("pm_token");
         setToken("");
       } finally {
         setLoading(false);

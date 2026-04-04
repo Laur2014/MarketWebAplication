@@ -136,17 +136,38 @@ const SESSION_COOKIE_NAME = "pm_session";
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
 
-function setSessionCookie(set: { headers?: Record<string, string> }, token: string, expiresAt: string) {
-  const maxAgeSeconds = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
-  set.headers = set.headers || {};
-  set.headers["Set-Cookie"] =
-    `${SESSION_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+function getSessionCookieOptions(request: Request) {
+  const originHeader = request.headers.get("origin");
+  const requestUrl = new URL(request.url);
+  const originUrl = originHeader ? new URL(originHeader) : null;
+  const isCrossSite = Boolean(originUrl && originUrl.hostname !== requestUrl.hostname);
+  const isSecure = requestUrl.protocol === "https:";
+
+  return {
+    sameSite: isCrossSite ? "None" : "Lax",
+    secure: isCrossSite || isSecure,
+  };
 }
 
-function clearSessionCookie(set: { headers?: Record<string, string> }) {
+function cookieHeaderValue(request: Request, tokenValue: string, maxAgeSeconds: number) {
+  const options = getSessionCookieOptions(request);
+  const securePart = options.secure ? "; Secure" : "";
+  return `${SESSION_COOKIE_NAME}=${tokenValue}; Path=/; HttpOnly; SameSite=${options.sameSite}; Max-Age=${maxAgeSeconds}${securePart}`;
+}
+
+function dbBoolean(value: boolean) {
+  return db.provider === "postgres" ? value : value ? 1 : 0;
+}
+
+function setSessionCookie(set: { headers?: Record<string, string> }, request: Request, token: string, expiresAt: string) {
+  const maxAgeSeconds = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
   set.headers = set.headers || {};
-  set.headers["Set-Cookie"] =
-    `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  set.headers["Set-Cookie"] = cookieHeaderValue(request, token, maxAgeSeconds);
+}
+
+function clearSessionCookie(set: { headers?: Record<string, string> }, request: Request) {
+  set.headers = set.headers || {};
+  set.headers["Set-Cookie"] = cookieHeaderValue(request, "", 0);
 }
 
 function consumeRateLimit(request: Request, keyPrefix: string, limit: number) {
@@ -253,7 +274,7 @@ const app = new Elysia()
     ).run(userId, 1000, createdAt, "{\"source\":\"register\"}");
 
     const session = await createSessionAsync(userId);
-    setSessionCookie(set, session.token, session.expiresAt);
+    setSessionCookie(set, request, session.token, session.expiresAt);
 
     return {
       token: session.token,
@@ -315,7 +336,7 @@ const app = new Elysia()
     }
 
     const session = await createSessionAsync(user.id);
-    setSessionCookie(set, session.token, session.expiresAt);
+    setSessionCookie(set, request, session.token, session.expiresAt);
 
     return {
       token: session.token,
@@ -336,7 +357,7 @@ const app = new Elysia()
       await clearSession(sessionToken);
     }
 
-    clearSessionCookie(set);
+    clearSessionCookie(set, request);
     return { success: true };
   })
   .post("/admin/users", async ({ body, request, set }) => {
@@ -1049,7 +1070,7 @@ const app = new Elysia()
           }
         }
 
-        await db.query("UPDATE markets SET payout_distributed = 1 WHERE id = ?").run(marketId);
+        await db.query("UPDATE markets SET payout_distributed = ? WHERE id = ?").run(dbBoolean(true), marketId);
 
         return {
           message:
@@ -1165,7 +1186,7 @@ const app = new Elysia()
 
         await db.query(
           "UPDATE markets SET status = 'archived', archived_at = ?, refund_distributed = ? WHERE id = ?"
-        ).run(archivedAt, refundableBets.length > 0 ? 1 : market.refund_distributed, marketId);
+        ).run(archivedAt, refundableBets.length > 0 ? dbBoolean(true) : market.refund_distributed, marketId);
 
         return {
           refundedBets: refundableBets.length,
