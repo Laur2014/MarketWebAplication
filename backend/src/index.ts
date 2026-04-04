@@ -1002,6 +1002,79 @@ const app = new Elysia()
       })),
     };
   })
+  .get("/debug/payouts", async ({ request, set }) => {
+    const authResult = await requireAdmin({ request, set });
+    if (isAuthError(authResult)) {
+      return authResult;
+    }
+
+    const counts = {
+      wonBets: (await db.query("SELECT COUNT(*) as total FROM bets WHERE status = 'won'").get()) as { total: number },
+      lostBets: (await db.query("SELECT COUNT(*) as total FROM bets WHERE status = 'lost'").get()) as { total: number },
+      refundedBets: (await db.query("SELECT COUNT(*) as total FROM bets WHERE status = 'refunded'").get()) as {
+        total: number;
+      },
+      profitableWonBets: (await db
+        .query("SELECT COUNT(*) as total FROM bets WHERE status = 'won' AND payout_amount > amount")
+        .get()) as { total: number },
+    };
+
+    const sampleWonBets = (await db
+      .query(
+        `SELECT id, user_id, market_id, outcome_id, amount, payout_amount, status, resolved_at
+         FROM bets
+         WHERE status = 'won'
+         ORDER BY resolved_at DESC NULLS LAST, id DESC
+         LIMIT 10`
+      )
+      .all()) as Array<{
+      id: number;
+      user_id: number;
+      market_id: number;
+      outcome_id: number;
+      amount: number;
+      payout_amount: number;
+      status: string;
+      resolved_at: string | null;
+    }>;
+
+    const sampleResolvedMarkets = (await db
+      .query(
+        `SELECT id, title, status, total_pool, winning_outcome_id, resolved_by, resolved_at, archived_at
+         FROM markets
+         WHERE status IN ('resolved', 'archived') AND winning_outcome_id IS NOT NULL
+         ORDER BY COALESCE(archived_at, resolved_at) DESC
+         LIMIT 10`
+      )
+      .all()) as Array<{
+      id: number;
+      title: string;
+      status: string;
+      total_pool: number;
+      winning_outcome_id: number | null;
+      resolved_by: number | null;
+      resolved_at: string | null;
+      archived_at: string | null;
+    }>;
+
+    return {
+      counts: {
+        wonBets: Number(counts.wonBets.total || 0),
+        lostBets: Number(counts.lostBets.total || 0),
+        refundedBets: Number(counts.refundedBets.total || 0),
+        profitableWonBets: Number(counts.profitableWonBets.total || 0),
+      },
+      sampleWonBets: sampleWonBets.map((bet) => ({
+        ...bet,
+        amount: Number(bet.amount || 0),
+        payout_amount: Number(bet.payout_amount || 0),
+      })),
+      sampleResolvedMarkets: sampleResolvedMarkets.map((market) => ({
+        ...market,
+        total_pool: Number(market.total_pool || 0),
+      })),
+    };
+  })
   .post("/admin/markets/:marketId/resolve", async ({ params, body, request, set }) => {
     const authResult = await requireAdmin({ request, set });
     if (isAuthError(authResult)) {
