@@ -955,6 +955,53 @@ const app = new Elysia()
       })),
     };
   })
+  .get("/debug/summary", async ({ request, set }) => {
+    const authResult = await requireAdmin({ request, set });
+    if (isAuthError(authResult)) {
+      return authResult;
+    }
+
+    const userCount = (await db.query("SELECT COUNT(*) as total FROM users").get()) as { total: number };
+    const marketCount = (await db.query("SELECT COUNT(*) as total FROM markets").get()) as { total: number };
+    const betCount = (await db.query("SELECT COUNT(*) as total FROM bets").get()) as { total: number };
+    const resolvedByMeCount = (await db
+      .query(
+        "SELECT COUNT(*) as total FROM markets WHERE resolved_by = ? AND (status = 'resolved' OR (status = 'archived' AND winning_outcome_id IS NOT NULL))"
+      )
+      .get(authResult.id)) as { total: number };
+
+    const leaderboardRows = (await db
+      .query(
+        `SELECT u.username,
+                COALESCE(SUM(
+                  CASE
+                    WHEN b.status = 'won' AND b.payout_amount > b.amount THEN b.payout_amount - b.amount
+                    ELSE 0
+                  END
+                ), 0) as total_winnings
+         FROM users u
+         LEFT JOIN bets b ON b.user_id = u.id
+         WHERE u.role = 'user'
+         GROUP BY u.id, u.username
+         ORDER BY total_winnings DESC, u.username ASC
+         LIMIT 5`
+      )
+      .all()) as Array<{ username: string; total_winnings: number }>;
+
+    return {
+      provider: db.provider,
+      counts: {
+        users: Number(userCount.total || 0),
+        markets: Number(marketCount.total || 0),
+        bets: Number(betCount.total || 0),
+        resolvedByMe: Number(resolvedByMeCount.total || 0),
+      },
+      topLeaderboard: leaderboardRows.map((row) => ({
+        username: row.username,
+        totalWinnings: Number(row.total_winnings || 0),
+      })),
+    };
+  })
   .post("/admin/markets/:marketId/resolve", async ({ params, body, request, set }) => {
     const authResult = await requireAdmin({ request, set });
     if (isAuthError(authResult)) {
