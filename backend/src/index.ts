@@ -132,6 +132,129 @@ async function ensureHistoryBootstrapped() {
   }
 }
 
+async function repairMissingWinningPayouts() {
+  const candidateMarkets = (await db
+    .query(
+      `SELECT id, total_pool, winning_outcome_id, resolved_at, payout_distributed
+       FROM markets
+       WHERE status IN ('resolved', 'archived') AND winning_outcome_id IS NOT NULL`
+    )
+    .all()) as Array<{
+    id: number | string;
+    total_pool: number;
+    winning_outcome_id: number | string;
+    resolved_at: string | null;
+    payout_distributed: number | boolean;
+  }>;
+
+  for (const market of candidateMarkets) {
+    const marketId = Number(market.id);
+    const winningOutcomeId = Number(market.winning_outcome_id);
+
+    const bets = (await db
+      .query(
+        `SELECT id, user_id, amount, outcome_id, status, payout_amount, refunded_amount, resolved_at
+         FROM bets
+         WHERE market_id = ?`
+      )
+      .all(marketId)) as Array<{
+      id: number | string;
+      user_id: number | string;
+      amount: number;
+      outcome_id: number | string;
+      status: "active" | "won" | "lost" | "refunded";
+      payout_amount: number;
+      refunded_amount: number;
+      resolved_at: string | null;
+    }>;
+
+    const winners = bets.filter((bet) => Number(bet.outcome_id) === winningOutcomeId);
+    const hasWonBets = bets.some((bet) => bet.status === "won");
+    const hasRefundedBets = bets.some((bet) => bet.status === "refunded" || Number(bet.refunded_amount || 0) > 0);
+
+    if (winners.length === 0 || hasWonBets || hasRefundedBets) {
+      continue;
+    }
+
+    await withTransaction(async () => {
+      const totalPoolCents = dollarsToCents(Number(market.total_pool || 0));
+      const resolvedAt = market.resolved_at || nowIso();
+      const winningBets = winners.map((bet) => ({
+        ...bet,
+        id: Number(bet.id),
+        user_id: Number(bet.user_id),
+        amountCents: dollarsToCents(Number(bet.amount || 0)),
+      }));
+      const totalWinningStakeCents = winningBets.reduce((acc, bet) => acc + bet.amountCents, 0);
+
+      if (totalWinningStakeCents <= 0) {
+        return;
+      }
+
+      const rawShares = winningBets.map((winner) => {
+        const numerator = winner.amountCents * totalPoolCents;
+        const payoutCents = Math.floor(numerator / totalWinningStakeCents);
+        const remainder = numerator % totalWinningStakeCents;
+        return { winner, payoutCents, remainder };
+      });
+
+      let distributed = rawShares.reduce((sum, item) => sum + item.payoutCents, 0);
+      let remaining = totalPoolCents - distributed;
+      rawShares.sort((a, b) => (b.remainder === a.remainder ? a.winner.id - b.winner.id : b.remainder - a.remainder));
+      for (let i = 0; i < rawShares.length && remaining > 0; i += 1, remaining -= 1) {
+        rawShares[i].payoutCents += 1;
+      }
+      distributed = rawShares.reduce((sum, item) => sum + item.payoutCents, 0);
+
+      for (const { winner, payoutCents } of rawShares) {
+        const user = (await db
+          .query("SELECT balance, total_winnings FROM users WHERE id = ?")
+          .get(winner.user_id)) as { balance: number; total_winnings: number } | null;
+
+        if (!user) {
+          throw new Error(`Winner user ${winner.user_id} not found during payout repair`);
+        }
+
+        const nextBalance = centsToDollars(dollarsToCents(Number(user.balance || 0)) + payoutCents);
+        const netWinningsCents = Math.max(0, payoutCents - winner.amountCents);
+        const nextTotalWinnings = centsToDollars(dollarsToCents(Number(user.total_winnings || 0)) + netWinningsCents);
+
+        await db.query("UPDATE users SET balance = ?, total_winnings = ? WHERE id = ?").run(
+          nextBalance,
+          nextTotalWinnings,
+          winner.user_id
+        );
+
+        await db.query("UPDATE bets SET status = 'won', payout_amount = ?, resolved_at = ? WHERE id = ?").run(
+          centsToDollars(payoutCents),
+          resolvedAt,
+          winner.id
+        );
+
+        await db.query(
+          "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'payout', ?, ?, ?, ?, ?)"
+        ).run(
+          winner.user_id,
+          centsToDollars(payoutCents),
+          marketId,
+          winner.id,
+          resolvedAt,
+          `{"reason":"market payout repair","totalPayoutDistributed":"${centsToDollars(distributed)}"}`
+        );
+      }
+
+      for (const loser of bets.filter((bet) => Number(bet.outcome_id) !== winningOutcomeId)) {
+        await db.query("UPDATE bets SET status = 'lost', resolved_at = ? WHERE id = ?").run(
+          resolvedAt,
+          Number(loser.id)
+        );
+      }
+
+      await db.query("UPDATE markets SET payout_distributed = ? WHERE id = ?").run(dbBoolean(true), marketId);
+    });
+  }
+}
+
 const SESSION_COOKIE_NAME = "pm_session";
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
@@ -218,6 +341,7 @@ async function findUserByUsernameOrEmail(username: string, email: string | null)
 }
 
 await initSchema();
+await repairMissingWinningPayouts();
 await ensureHistoryBootstrapped();
 
 const app = new Elysia()
@@ -1129,9 +1253,9 @@ const app = new Elysia()
 
         const totalPoolCents = dollarsToCents(Number(market.total_pool || 0));
         const winners = bets
-          .filter((bet) => bet.outcome_id === winningOutcomeId)
+          .filter((bet) => Number(bet.outcome_id) === winningOutcomeId)
           .map((bet) => ({ ...bet, amountCents: dollarsToCents(bet.amount) }));
-        const losers = bets.filter((bet) => bet.outcome_id !== winningOutcomeId);
+        const losers = bets.filter((bet) => Number(bet.outcome_id) !== winningOutcomeId);
         const totalWinningStakeCents = winners.reduce((acc, bet) => acc + bet.amountCents, 0);
         const resolvedAt = nowIso();
 
