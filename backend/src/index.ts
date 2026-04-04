@@ -27,26 +27,26 @@ type MarketRow = {
   title: string;
   description: string | null;
   status: "active" | "resolved" | "archived";
-  createdBy: number;
-  winningOutcomeId: number | null;
-  totalPool: number;
-  participantCount: number;
-  createdAt: string;
-  resolvedAt: string | null;
-  archivedAt: string | null;
+  created_by: number;
+  winning_outcome_id: number | null;
+  total_pool: number;
+  participant_count: number;
+  created_at: string;
+  resolved_at: string | null;
+  archived_at: string | null;
 };
 
 type OutcomeRow = {
   id: number;
-  marketId: number;
+  market_id: number;
   label: string;
-  totalAmountStaked: number;
+  total_amount_staked: number;
 };
 
 async function getOutcomesForMarket(marketId: number) {
   return (await db
     .query(
-      `SELECT id, market_id as marketId, label, total_amount_staked as totalAmountStaked
+      `SELECT id, market_id, label, total_amount_staked
        FROM outcomes
        WHERE market_id = ?
        ORDER BY id ASC`
@@ -56,12 +56,12 @@ async function getOutcomesForMarket(marketId: number) {
 
 async function marketWithComputedFields(market: MarketRow) {
   const outcomes = await getOutcomesForMarket(market.id);
-  const totalPool = Number(market.totalPool || 0);
+  const totalPool = Number(market.total_pool || 0);
 
   const mappedOutcomes = outcomes.map((outcome) => ({
     id: outcome.id,
     label: outcome.label,
-    ...calculateOutcomeStats(Number(outcome.totalAmountStaked || 0), totalPool),
+    ...calculateOutcomeStats(Number(outcome.total_amount_staked || 0), totalPool),
   }));
 
   return {
@@ -69,13 +69,13 @@ async function marketWithComputedFields(market: MarketRow) {
     title: market.title,
     description: market.description,
     status: market.status,
-    createdBy: market.createdBy,
-    winningOutcomeId: market.winningOutcomeId,
+    createdBy: market.created_by,
+    winningOutcomeId: market.winning_outcome_id,
     totalPool,
-    participantCount: market.participantCount,
-    createdAt: market.createdAt,
-    resolvedAt: market.resolvedAt,
-    archivedAt: market.archivedAt,
+    participantCount: Number(market.participant_count || 0),
+    createdAt: market.created_at,
+    resolvedAt: market.resolved_at,
+    archivedAt: market.archived_at,
     outcomes: mappedOutcomes,
   };
 }
@@ -83,9 +83,8 @@ async function marketWithComputedFields(market: MarketRow) {
 async function getMarketById(marketId: number) {
   const market = (await db
     .query(
-      `SELECT id, title, description, status, created_by as createdBy, winning_outcome_id as winningOutcomeId,
-              total_pool as totalPool, participant_count as participantCount, created_at as createdAt,
-              resolved_at as resolvedAt, archived_at as archivedAt
+      `SELECT id, title, description, status, created_by, winning_outcome_id,
+              total_pool, participant_count, created_at, resolved_at, archived_at
        FROM markets
        WHERE id = ?`
     )
@@ -456,10 +455,10 @@ const app = new Elysia()
 
     const rows = (await db
       .query(
-        `SELECT b.id, b.amount, b.created_at as createdAt,
-                m.id as marketId, m.title as marketTitle, m.status as marketStatus,
-                o.id as outcomeId, o.label as outcomeLabel,
-                m.total_pool as totalPool, o.total_amount_staked as outcomeStake
+        `SELECT b.id, b.amount, b.created_at,
+                m.id as market_id, m.title as market_title, m.status as market_status,
+                o.id as outcome_id, o.label as outcome_label,
+                m.total_pool, o.total_amount_staked as outcome_stake
          FROM bets b
          JOIN markets m ON m.id = b.market_id
          JOIN outcomes o ON o.id = b.outcome_id
@@ -470,31 +469,31 @@ const app = new Elysia()
       .all(authResult.id, limit, offset)) as Array<{
       id: number;
       amount: number;
-      createdAt: string;
-      marketId: number;
-      marketTitle: string;
-      marketStatus: string;
-      outcomeId: number;
-      outcomeLabel: string;
-      totalPool: number;
-      outcomeStake: number;
+      created_at: string;
+      market_id: number;
+      market_title: string;
+      market_status: string;
+      outcome_id: number;
+      outcome_label: string;
+      total_pool: number;
+      outcome_stake: number;
     }>;
 
     const items = rows.map((row) => ({
       id: row.id,
       amount: row.amount,
-      createdAt: row.createdAt,
+      createdAt: row.created_at,
       market: {
-        id: row.marketId,
-        title: row.marketTitle,
-        status: row.marketStatus,
+        id: row.market_id,
+        title: row.market_title,
+        status: row.market_status,
       },
       outcome: {
-        id: row.outcomeId,
-        label: row.outcomeLabel,
+        id: row.outcome_id,
+        label: row.outcome_label,
       },
-      odds: calculateOutcomeStats(row.outcomeStake, row.totalPool).odds,
-      percentage: calculateOutcomeStats(row.outcomeStake, row.totalPool).percentage,
+      odds: calculateOutcomeStats(row.outcome_stake, row.total_pool).odds,
+      percentage: calculateOutcomeStats(row.outcome_stake, row.total_pool).percentage,
     }));
 
     return paginatedResponse(items, page, limit, Number(totalCountRow.total || 0));
@@ -514,10 +513,10 @@ const app = new Elysia()
 
     const rows = (await db
       .query(
-        `SELECT b.id, b.amount, b.status, b.payout_amount as payoutAmount, b.refunded_amount as refundedAmount,
-                b.created_at as createdAt, b.resolved_at as resolvedAt,
-                m.id as marketId, m.title as marketTitle,
-                o.id as outcomeId, o.label as outcomeLabel
+        `SELECT b.id, b.amount, b.status, b.payout_amount, b.refunded_amount,
+                b.created_at, b.resolved_at,
+                m.id as market_id, m.title as market_title,
+                o.id as outcome_id, o.label as outcome_label
          FROM bets b
          JOIN markets m ON m.id = b.market_id
          JOIN outcomes o ON o.id = b.outcome_id
@@ -529,14 +528,14 @@ const app = new Elysia()
       id: number;
       amount: number;
       status: "won" | "lost" | "refunded";
-      payoutAmount: number;
-      refundedAmount: number;
-      createdAt: string;
-      resolvedAt: string | null;
-      marketId: number;
-      marketTitle: string;
-      outcomeId: number;
-      outcomeLabel: string;
+      payout_amount: number;
+      refunded_amount: number;
+      created_at: string;
+      resolved_at: string | null;
+      market_id: number;
+      market_title: string;
+      outcome_id: number;
+      outcome_label: string;
     }>;
 
     const items = rows.map((row) => ({
@@ -544,17 +543,17 @@ const app = new Elysia()
       amount: row.amount,
       status: row.status,
       won: row.status === "won",
-      payoutAmount: row.payoutAmount,
-      refundedAmount: row.refundedAmount,
-      createdAt: row.createdAt,
-      resolvedAt: row.resolvedAt,
+      payoutAmount: Number(row.payout_amount || 0),
+      refundedAmount: Number(row.refunded_amount || 0),
+      createdAt: row.created_at,
+      resolvedAt: row.resolved_at,
       market: {
-        id: row.marketId,
-        title: row.marketTitle,
+        id: row.market_id,
+        title: row.market_title,
       },
       outcome: {
-        id: row.outcomeId,
-        label: row.outcomeLabel,
+        id: row.outcome_id,
+        label: row.outcome_label,
       },
     }));
 
@@ -580,8 +579,8 @@ const app = new Elysia()
 
     const rows = (await db
       .query(
-        `SELECT m.id as marketId, m.title as marketTitle, m.resolved_at as resolvedAt, m.total_pool as totalPool,
-                o.id as winningOutcomeId, o.label as winningOutcomeLabel
+        `SELECT m.id as market_id, m.title as market_title, m.resolved_at, m.total_pool,
+                o.id as winning_outcome_id, o.label as winning_outcome_label
          FROM markets m
          LEFT JOIN outcomes o ON o.id = m.winning_outcome_id
          WHERE m.status = 'resolved' AND m.resolved_by = ?
@@ -589,23 +588,23 @@ const app = new Elysia()
          LIMIT ? OFFSET ?`
       )
       .all(authResult.id, limit, offset)) as Array<{
-      marketId: number;
-      marketTitle: string;
-      resolvedAt: string | null;
-      totalPool: number;
-      winningOutcomeId: number | null;
-      winningOutcomeLabel: string | null;
+      market_id: number;
+      market_title: string;
+      resolved_at: string | null;
+      total_pool: number;
+      winning_outcome_id: number | null;
+      winning_outcome_label: string | null;
     }>;
 
     const items = rows.map((row) => ({
-      marketId: row.marketId,
-      marketTitle: row.marketTitle,
-      resolvedAt: row.resolvedAt,
-      totalPool: row.totalPool,
-      winningOutcome: row.winningOutcomeId
+      marketId: row.market_id,
+      marketTitle: row.market_title,
+      resolvedAt: row.resolved_at,
+      totalPool: Number(row.total_pool || 0),
+      winningOutcome: row.winning_outcome_id
         ? {
-            id: row.winningOutcomeId,
-            label: row.winningOutcomeLabel,
+            id: row.winning_outcome_id,
+            label: row.winning_outcome_label,
           }
         : null,
     }));
@@ -640,16 +639,14 @@ const app = new Elysia()
       : ((await db.query("SELECT COUNT(*) as total FROM markets").get()) as { total: number });
 
     const querySql = whereStatus
-      ? `SELECT id, title, description, status, created_by as createdBy, winning_outcome_id as winningOutcomeId,
-                total_pool as totalPool, participant_count as participantCount, created_at as createdAt,
-                resolved_at as resolvedAt, archived_at as archivedAt
+      ? `SELECT id, title, description, status, created_by, winning_outcome_id,
+                total_pool, participant_count, created_at, resolved_at, archived_at
          FROM markets
          WHERE status = ?
          ORDER BY ${sortColumn} ${order}, id DESC
          LIMIT ? OFFSET ?`
-      : `SELECT id, title, description, status, created_by as createdBy, winning_outcome_id as winningOutcomeId,
-                total_pool as totalPool, participant_count as participantCount, created_at as createdAt,
-                resolved_at as resolvedAt, archived_at as archivedAt
+      : `SELECT id, title, description, status, created_by, winning_outcome_id,
+                total_pool, participant_count, created_at, resolved_at, archived_at
          FROM markets
          ORDER BY ${sortColumn} ${order}, id DESC
          LIMIT ? OFFSET ?`;
@@ -756,31 +753,31 @@ const app = new Elysia()
 
     const before = (await db
       .query(
-        `SELECT created_at as createdAt, data_json as dataJson
+        `SELECT created_at, data_json
          FROM market_snapshots
          WHERE market_id = ? AND created_at < ?
          ORDER BY created_at DESC
          LIMIT 1`
       )
-      .get(marketId, fromDate.toISOString())) as { createdAt: string; dataJson: string } | null;
+      .get(marketId, fromDate.toISOString())) as { created_at: string; data_json: string } | null;
 
     const rows = (await db
       .query(
-        `SELECT created_at as createdAt, data_json as dataJson
+        `SELECT created_at, data_json
          FROM market_snapshots
          WHERE market_id = ? AND created_at >= ? AND created_at <= ?
          ORDER BY created_at ASC`
       )
       .all(marketId, fromDate.toISOString(), toDate.toISOString())) as Array<{
-      createdAt: string;
-      dataJson: string;
+      created_at: string;
+      data_json: string;
     }>;
 
     const combinedRows = before ? [before, ...rows] : rows;
 
     const snapshots = combinedRows.map((row) => ({
-      createdAt: row.createdAt,
-      ...(JSON.parse(row.dataJson) as {
+      createdAt: row.created_at,
+      ...(JSON.parse(row.data_json) as {
         totalPool: number;
         status: string;
         outcomes: Array<{ id: number; label: string; percentage: number; odds: number | null; stake: number }>;
@@ -907,15 +904,19 @@ const app = new Elysia()
   .get("/leaderboard", async () => {
     const rows = (await db
       .query(
-        `SELECT id, username, total_winnings as totalWinnings
+        `SELECT id, username, total_winnings
          FROM users
          WHERE role = 'user'
          ORDER BY total_winnings DESC, username ASC`
       )
-      .all()) as Array<{ id: number; username: string; totalWinnings: number }>;
+      .all()) as Array<{ id: number; username: string; total_winnings: number }>;
 
     return {
-      items: rows,
+      items: rows.map((row) => ({
+        id: row.id,
+        username: row.username,
+        totalWinnings: Number(row.total_winnings || 0),
+      })),
     };
   })
   .post("/admin/markets/:marketId/resolve", async ({ params, body, request, set }) => {
@@ -937,13 +938,13 @@ const app = new Elysia()
       const response = await withTransaction(async () => {
         const market = (await db
           .query(
-            "SELECT id, status, total_pool as totalPool, payout_distributed as payoutDistributed FROM markets WHERE id = ?"
+            "SELECT id, status, total_pool, payout_distributed FROM markets WHERE id = ?"
           )
           .get(marketId)) as {
           id: number;
           status: string;
-          totalPool: number;
-          payoutDistributed: number | boolean;
+          total_pool: number;
+          payout_distributed: number | boolean;
         } | null;
 
         if (!market) {
@@ -964,17 +965,17 @@ const app = new Elysia()
 
         const bets = (await db
           .query(
-            `SELECT id, user_id as userId, amount, outcome_id as outcomeId
+            `SELECT id, user_id, amount, outcome_id
              FROM bets
              WHERE market_id = ? AND status = 'active'`
           )
-          .all(marketId)) as Array<{ id: number; userId: number; amount: number; outcomeId: number }>;
+          .all(marketId)) as Array<{ id: number; user_id: number; amount: number; outcome_id: number }>;
 
-        const totalPoolCents = dollarsToCents(Number(market.totalPool || 0));
+        const totalPoolCents = dollarsToCents(Number(market.total_pool || 0));
         const winners = bets
-          .filter((bet) => bet.outcomeId === winningOutcomeId)
+          .filter((bet) => bet.outcome_id === winningOutcomeId)
           .map((bet) => ({ ...bet, amountCents: dollarsToCents(bet.amount) }));
-        const losers = bets.filter((bet) => bet.outcomeId !== winningOutcomeId);
+        const losers = bets.filter((bet) => bet.outcome_id !== winningOutcomeId);
         const totalWinningStakeCents = winners.reduce((acc, bet) => acc + bet.amountCents, 0);
         const resolvedAt = nowIso();
 
@@ -984,7 +985,7 @@ const app = new Elysia()
            WHERE id = ?`
         ).run(winningOutcomeId, resolvedAt, authResult.id, marketId);
 
-        if (totalWinningStakeCents > 0 && !market.payoutDistributed) {
+        if (totalWinningStakeCents > 0 && !market.payout_distributed) {
           const rawShares = winners.map((winner) => {
             const numerator = winner.amountCents * totalPoolCents;
             const payoutCents = Math.floor(numerator / totalWinningStakeCents);
@@ -1002,8 +1003,8 @@ const app = new Elysia()
 
           for (const { winner, payoutCents } of rawShares) {
             const user = (await db
-              .query("SELECT balance, total_winnings as totalWinnings FROM users WHERE id = ?")
-              .get(winner.userId)) as { balance: number; totalWinnings: number } | null;
+              .query("SELECT balance, total_winnings FROM users WHERE id = ?")
+              .get(winner.user_id)) as { balance: number; total_winnings: number } | null;
 
             if (!user) {
               throw new Error("Winner user not found");
@@ -1011,12 +1012,12 @@ const app = new Elysia()
 
             const nextBalance = centsToDollars(dollarsToCents(user.balance) + payoutCents);
             const netWinningsCents = Math.max(0, payoutCents - winner.amountCents);
-            const nextTotalWinnings = centsToDollars(dollarsToCents(user.totalWinnings) + netWinningsCents);
+            const nextTotalWinnings = centsToDollars(dollarsToCents(user.total_winnings) + netWinningsCents);
 
             await db.query("UPDATE users SET balance = ?, total_winnings = ? WHERE id = ?").run(
               nextBalance,
               nextTotalWinnings,
-              winner.userId
+              winner.user_id
             );
 
             await db.query("UPDATE bets SET status = 'won', payout_amount = ?, resolved_at = ? WHERE id = ?").run(
@@ -1028,7 +1029,7 @@ const app = new Elysia()
             await db.query(
               "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'payout', ?, ?, ?, ?, ?)"
             ).run(
-              winner.userId,
+              winner.user_id,
               centsToDollars(payoutCents),
               marketId,
               winner.id,
@@ -1089,17 +1090,17 @@ const app = new Elysia()
       const result = await withTransaction(async () => {
         const market = (await db
           .query(
-            `SELECT id, status, winning_outcome_id as winningOutcomeId,
-                    archived_at as archivedAt, refund_distributed as refundDistributed
+            `SELECT id, status, winning_outcome_id,
+                    archived_at, refund_distributed
              FROM markets
              WHERE id = ?`
           )
           .get(marketId)) as {
           id: number;
           status: "active" | "resolved" | "archived";
-          winningOutcomeId: number | null;
-          archivedAt: string | null;
-          refundDistributed: number | boolean;
+          winning_outcome_id: number | null;
+          archived_at: string | null;
+          refund_distributed: number | boolean;
         } | null;
 
         if (!market) {
@@ -1113,37 +1114,37 @@ const app = new Elysia()
         const shouldRefundActive = market.status === "active";
         const shouldRefundResolvedNoWinners =
           market.status === "resolved" &&
-          market.winningOutcomeId !== null &&
+          market.winning_outcome_id !== null &&
           ((await db
             .query("SELECT COUNT(*) as total FROM bets WHERE market_id = ? AND status = 'won'")
             .get(marketId)) as { total: number }).total === 0;
 
-        let refundableBets: Array<{ id: number; userId: number; amount: number }> = [];
+        let refundableBets: Array<{ id: number; user_id: number; amount: number }> = [];
 
-        if (shouldRefundActive && !market.refundDistributed) {
+        if (shouldRefundActive && !market.refund_distributed) {
           refundableBets = (await db
-            .query("SELECT id, user_id as userId, amount FROM bets WHERE market_id = ? AND status = 'active'")
-            .all(marketId)) as Array<{ id: number; userId: number; amount: number }>;
+            .query("SELECT id, user_id, amount FROM bets WHERE market_id = ? AND status = 'active'")
+            .all(marketId)) as Array<{ id: number; user_id: number; amount: number }>;
         }
 
-        if (shouldRefundResolvedNoWinners && !market.refundDistributed) {
+        if (shouldRefundResolvedNoWinners && !market.refund_distributed) {
           refundableBets = (await db
-            .query("SELECT id, user_id as userId, amount FROM bets WHERE market_id = ? AND status = 'lost'")
-            .all(marketId)) as Array<{ id: number; userId: number; amount: number }>;
+            .query("SELECT id, user_id, amount FROM bets WHERE market_id = ? AND status = 'lost'")
+            .all(marketId)) as Array<{ id: number; user_id: number; amount: number }>;
         }
 
         const archivedAt = nowIso();
 
         if (refundableBets.length > 0) {
           for (const bet of refundableBets) {
-            const user = (await db.query("SELECT balance FROM users WHERE id = ?").get(bet.userId)) as {
+            const user = (await db.query("SELECT balance FROM users WHERE id = ?").get(bet.user_id)) as {
               balance: number;
             } | null;
             if (!user) {
               throw new Error("User not found for refund");
             }
             const nextBalance = centsToDollars(dollarsToCents(user.balance) + dollarsToCents(bet.amount));
-            await db.query("UPDATE users SET balance = ? WHERE id = ?").run(nextBalance, bet.userId);
+            await db.query("UPDATE users SET balance = ? WHERE id = ?").run(nextBalance, bet.user_id);
             await db.query("UPDATE bets SET status = 'refunded', refunded_amount = ?, resolved_at = ? WHERE id = ?").run(
               centsToDollars(dollarsToCents(bet.amount)),
               archivedAt,
@@ -1152,7 +1153,7 @@ const app = new Elysia()
             await db.query(
               "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'refund', ?, ?, ?, ?, ?)"
             ).run(
-              bet.userId,
+              bet.user_id,
               centsToDollars(dollarsToCents(bet.amount)),
               marketId,
               bet.id,
@@ -1164,7 +1165,7 @@ const app = new Elysia()
 
         await db.query(
           "UPDATE markets SET status = 'archived', archived_at = ?, refund_distributed = ? WHERE id = ?"
-        ).run(archivedAt, refundableBets.length > 0 ? 1 : market.refundDistributed, marketId);
+        ).run(archivedAt, refundableBets.length > 0 ? 1 : market.refund_distributed, marketId);
 
         return {
           refundedBets: refundableBets.length,
