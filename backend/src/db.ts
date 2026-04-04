@@ -269,7 +269,25 @@ async function initSqliteSchema() {
   await db.exec(`
     UPDATE markets
     SET resolved_by = created_by
-    WHERE status = 'resolved' AND resolved_by IS NULL;
+    WHERE resolved_by IS NULL
+      AND (
+        status = 'resolved'
+        OR (status = 'archived' AND winning_outcome_id IS NOT NULL)
+      );
+  `);
+
+  await db.exec(`
+    UPDATE users
+    SET total_winnings = COALESCE((
+      SELECT SUM(
+        CASE
+          WHEN b.status = 'won' AND b.payout_amount > b.amount THEN b.payout_amount - b.amount
+          ELSE 0
+        END
+      )
+      FROM bets b
+      WHERE b.user_id = users.id
+    ), 0);
   `);
 }
 
@@ -360,7 +378,25 @@ async function initPostgresSchema() {
   await db.exec(`
     UPDATE markets
     SET resolved_by = created_by
-    WHERE status = 'resolved' AND resolved_by IS NULL;
+    WHERE resolved_by IS NULL
+      AND (
+        status = 'resolved'
+        OR (status = 'archived' AND winning_outcome_id IS NOT NULL)
+      );
+  `);
+
+  await db.exec(`
+    UPDATE users
+    SET total_winnings = COALESCE((
+      SELECT SUM(
+        CASE
+          WHEN b.status = 'won' AND b.payout_amount > b.amount THEN b.payout_amount - b.amount
+          ELSE 0
+        END
+      )
+      FROM bets b
+      WHERE b.user_id = users.id
+    ), 0);
   `);
 }
 
@@ -372,4 +408,3 @@ export async function initSchema() {
 
   await initSqliteSchema();
 }
-

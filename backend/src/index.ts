@@ -595,23 +595,28 @@ const app = new Elysia()
     const { page, limit, offset } = parsePagination(url.searchParams);
 
     const totalCountRow = (await db
-      .query("SELECT COUNT(*) as total FROM markets WHERE status = 'resolved' AND resolved_by = ?")
+      .query(
+        "SELECT COUNT(*) as total FROM markets WHERE resolved_by = ? AND (status = 'resolved' OR (status = 'archived' AND winning_outcome_id IS NOT NULL))"
+      )
       .get(authResult.id)) as { total: number };
 
     const rows = (await db
       .query(
-        `SELECT m.id as market_id, m.title as market_title, m.resolved_at, m.total_pool,
+        `SELECT m.id as market_id, m.title as market_title, m.status, m.resolved_at, m.archived_at, m.total_pool,
                 o.id as winning_outcome_id, o.label as winning_outcome_label
          FROM markets m
          LEFT JOIN outcomes o ON o.id = m.winning_outcome_id
-         WHERE m.status = 'resolved' AND m.resolved_by = ?
-         ORDER BY m.resolved_at DESC
+         WHERE m.resolved_by = ?
+           AND (m.status = 'resolved' OR (m.status = 'archived' AND m.winning_outcome_id IS NOT NULL))
+         ORDER BY COALESCE(m.archived_at, m.resolved_at) DESC
          LIMIT ? OFFSET ?`
       )
       .all(authResult.id, limit, offset)) as Array<{
       market_id: number;
       market_title: string;
+      status: "resolved" | "archived";
       resolved_at: string | null;
+      archived_at: string | null;
       total_pool: number;
       winning_outcome_id: number | null;
       winning_outcome_label: string | null;
@@ -621,6 +626,8 @@ const app = new Elysia()
       marketId: row.market_id,
       marketTitle: row.market_title,
       resolvedAt: row.resolved_at,
+      status: row.status,
+      archivedAt: row.archived_at,
       totalPool: Number(row.total_pool || 0),
       winningOutcome: row.winning_outcome_id
         ? {
@@ -925,10 +932,18 @@ const app = new Elysia()
   .get("/leaderboard", async () => {
     const rows = (await db
       .query(
-        `SELECT id, username, total_winnings
-         FROM users
-         WHERE role = 'user'
-         ORDER BY total_winnings DESC, username ASC`
+        `SELECT u.id, u.username,
+                COALESCE(SUM(
+                  CASE
+                    WHEN b.status = 'won' AND b.payout_amount > b.amount THEN b.payout_amount - b.amount
+                    ELSE 0
+                  END
+                ), 0) as total_winnings
+         FROM users u
+         LEFT JOIN bets b ON b.user_id = u.id
+         WHERE u.role = 'user'
+         GROUP BY u.id, u.username
+         ORDER BY total_winnings DESC, u.username ASC`
       )
       .all()) as Array<{ id: number; username: string; total_winnings: number }>;
 

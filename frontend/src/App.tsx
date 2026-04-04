@@ -62,6 +62,8 @@ type AdminResolvedMarketItem = {
   marketId: number;
   marketTitle: string;
   resolvedAt: string | null;
+  archivedAt?: string | null;
+  status?: "resolved" | "archived";
   totalPool: number;
   winningOutcome: { id: number; label: string } | null;
 };
@@ -1197,6 +1199,7 @@ function ProfilePage({
                 Winning outcome: <strong>{market.winningOutcome?.label || "Not set"}</strong> | Pool:{" "}
                 {currency(market.totalPool)}
               </div>
+              {market.status && <div>Status: <strong>{market.status}</strong></div>}
               <div>Resolved at: {market.resolvedAt ? new Date(market.resolvedAt).toLocaleString() : "-"}</div>
             </article>
           ))}
