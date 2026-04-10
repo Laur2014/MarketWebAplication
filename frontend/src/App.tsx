@@ -78,7 +78,14 @@ type Paginated<T> = {
   hasPrev: boolean;
 };
 
+type AppToast = {
+  id: number;
+  variant: "success" | "error";
+  message: string;
+};
+
 const POLL_MS = 5000;
+const TOAST_MS = 2800;
 
 function currency(value: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value ?? 0);
@@ -213,6 +220,37 @@ function PageNav({
   );
 }
 
+function ToastViewport({
+  toasts,
+  onDismiss,
+}: {
+  toasts: AppToast[];
+  onDismiss: (id: number) => void;
+}) {
+  if (toasts.length === 0) return null;
+
+  return (
+    <div className="toast-viewport" aria-live="polite" aria-atomic="true">
+      {toasts.map((toast) => (
+        <div key={toast.id} className={`app-toast ${toast.variant}`}>
+          <div className={`app-toast-icon ${toast.variant}`} aria-hidden="true">
+            {toast.variant === "success" ? "✓" : "✕"}
+          </div>
+          <div className="app-toast-message">{toast.message}</div>
+          <button
+            type="button"
+            className="app-toast-close"
+            aria-label="Dismiss notification"
+            onClick={() => onDismiss(toast.id)}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AuthScreen({ onAuth }: { onAuth: (token: string, user: User) => void }) {
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState("");
@@ -331,10 +369,12 @@ function DashboardPage({
   token,
   user,
   onUserRefresh,
+  onNotify,
 }: {
   token: string;
   user: User;
   onUserRefresh: () => Promise<void>;
+  onNotify: (variant: AppToast["variant"], message: string) => void;
 }) {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState("active");
@@ -433,11 +473,15 @@ function DashboardPage({
     const outcomes = createOutcomes.filter((item) => item.checked).map((item) => item.label);
 
     if (createTitle.trim().length < 3) {
-      setCreateMessage("Title must be at least 3 characters.");
+      const nextMessage = "Title must be at least 3 characters.";
+      setCreateMessage(nextMessage);
+      onNotify("error", nextMessage);
       return;
     }
     if (outcomes.length < 2) {
-      setCreateMessage("Select at least 2 outcomes.");
+      const nextMessage = "Select at least 2 outcomes.";
+      setCreateMessage(nextMessage);
+      onNotify("error", nextMessage);
       return;
     }
 
@@ -461,11 +505,14 @@ function DashboardPage({
         { label: "No", checked: true },
       ]);
       setCreateMessage("Market created.");
+      onNotify("success", "Market created successfully.");
       setPage(1);
       loadMarkets();
       onUserRefresh();
     } catch (err) {
-      setCreateMessage((err as Error).message);
+      const nextMessage = (err as Error).message;
+      setCreateMessage(nextMessage);
+      onNotify("error", nextMessage);
     }
   };
 
@@ -478,13 +525,23 @@ function DashboardPage({
   const addCustomOutcome = () => {
     const value = customOutcome.trim();
     if (!value) return;
+    if (value.length < 2) {
+      const nextMessage = "Outcome must be at least 2 characters.";
+      setCreateMessage(nextMessage);
+      onNotify("error", nextMessage);
+      return;
+    }
     const exists = createOutcomes.some((item) => item.label.toLowerCase() === value.toLowerCase());
     if (exists) {
-      setCreateMessage("Outcome already exists.");
+      const nextMessage = "Outcome already exists.";
+      setCreateMessage(nextMessage);
+      onNotify("error", nextMessage);
       return;
     }
     setCreateOutcomes((current) => [...current, { label: value, checked: true }]);
     setCustomOutcome("");
+    setCreateMessage("");
+    onNotify("success", `Outcome "${value}" added.`);
   };
 
   const canCreateBet = user.role !== "admin";
@@ -501,9 +558,12 @@ function DashboardPage({
         token
       );
       setFastResolveMessage("Market resolved.");
+      onNotify("success", "Market resolved successfully.");
       await Promise.all([loadMarkets(), loadFastResolveMarkets(), onUserRefresh()]);
     } catch (err) {
-      setFastResolveMessage((err as Error).message);
+      const nextMessage = (err as Error).message;
+      setFastResolveMessage(nextMessage);
+      onNotify("error", nextMessage);
     }
   };
 
@@ -669,7 +729,17 @@ function DashboardPage({
   );
 }
 
-function MarketDetailPage({ token, user, onUserRefresh }: { token: string; user: User; onUserRefresh: () => Promise<void> }) {
+function MarketDetailPage({
+  token,
+  user,
+  onUserRefresh,
+  onNotify,
+}: {
+  token: string;
+  user: User;
+  onUserRefresh: () => Promise<void>;
+  onNotify: (variant: AppToast["variant"], message: string) => void;
+}) {
   const { id } = useParams();
   const marketId = Number(id);
   const navigate = useNavigate();
@@ -682,7 +752,7 @@ function MarketDetailPage({ token, user, onUserRefresh }: { token: string; user:
   const [amount, setAmount] = useState("");
   const [message, setMessage] = useState("");
   const [resolveOutcomeId, setResolveOutcomeId] = useState<number | null>(null);
-  const [showBetSuccess, setShowBetSuccess] = useState(false);
+  const showBetSuccess = false;
   const [trendRange, setTrendRange] = useState<TrendRange>("6h");
   const [trendHoverIndex, setTrendHoverIndex] = useState<number | null>(null);
   const [trendNow, setTrendNow] = useState(Date.now());
@@ -752,11 +822,15 @@ function MarketDetailPage({ token, user, onUserRefresh }: { token: string; user:
     setMessage("");
     const parsed = Number(amount);
     if (!selectedOutcome) {
-      setMessage("Select an outcome.");
+      const nextMessage = "Select an outcome.";
+      setMessage(nextMessage);
+      onNotify("error", nextMessage);
       return;
     }
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      setMessage("Bet amount must be a positive number.");
+      const nextMessage = "Bet amount must be a positive number.";
+      setMessage(nextMessage);
+      onNotify("error", nextMessage);
       return;
     }
 
@@ -770,12 +844,13 @@ function MarketDetailPage({ token, user, onUserRefresh }: { token: string; user:
         token
       );
       setMessage("Bet placed.");
-      setShowBetSuccess(true);
+      onNotify("success", "Bet placed successfully.");
       setAmount("");
       await Promise.all([load(), loadTrendHistory(), onUserRefresh()]);
-      setTimeout(() => setShowBetSuccess(false), 1800);
     } catch (err) {
-      setMessage((err as Error).message);
+      const nextMessage = (err as Error).message;
+      setMessage(nextMessage);
+      onNotify("error", nextMessage);
     }
   };
 
@@ -789,21 +864,27 @@ function MarketDetailPage({ token, user, onUserRefresh }: { token: string; user:
         token
       );
       setMessage("Market resolved.");
+      onNotify("success", "Market resolved successfully.");
       await Promise.all([load(), loadTrendHistory(), onUserRefresh()]);
     } catch (err) {
-      setMessage((err as Error).message);
+      const nextMessage = (err as Error).message;
+      setMessage(nextMessage);
+      onNotify("error", nextMessage);
     }
   };
 
   const archiveMarket = async () => {
-      setMessage("");
-      try {
-        await apiRequest(`/admin/markets/${marketId}/archive`, { method: "POST" }, token);
-        setMessage("Market archived.");
-        await Promise.all([load(), loadTrendHistory(), onUserRefresh()]);
-      } catch (err) {
-        setMessage((err as Error).message);
-      }
+    setMessage("");
+    try {
+      await apiRequest(`/admin/markets/${marketId}/archive`, { method: "POST" }, token);
+      setMessage("Market archived.");
+      onNotify("success", "Market archived successfully.");
+      await Promise.all([load(), loadTrendHistory(), onUserRefresh()]);
+    } catch (err) {
+      const nextMessage = (err as Error).message;
+      setMessage(nextMessage);
+      onNotify("error", nextMessage);
+    }
   };
 
   if (!marketId || Number.isNaN(marketId)) return <Navigate to="/" replace />;
@@ -1042,12 +1123,14 @@ function ProfilePage({
   onUserRefresh,
   theme,
   onToggleTheme,
+  onNotify,
 }: {
   token: string;
   user: User;
   onUserRefresh: () => Promise<void>;
   theme: "light" | "dark";
   onToggleTheme: () => void;
+  onNotify: (variant: AppToast["variant"], message: string) => void;
 }) {
   const [activePage, setActivePage] = useState(1);
   const [resolvedPage, setResolvedPage] = useState(1);
@@ -1115,8 +1198,11 @@ function ProfilePage({
       const response = await apiRequest<{ apiKey: string }>("/me/api-key", { method: "POST" }, token);
       setApiKey(response.apiKey);
       setApiKeyMessage("New API key generated. Save it now.");
+      onNotify("success", "New API key generated.");
     } catch (err) {
-      setApiKeyMessage((err as Error).message);
+      const nextMessage = (err as Error).message;
+      setApiKeyMessage(nextMessage);
+      onNotify("error", nextMessage);
     }
   };
 
@@ -1126,8 +1212,11 @@ function ProfilePage({
       await apiRequest("/me/api-key", { method: "DELETE" }, token);
       setApiKey("");
       setApiKeyMessage("API key revoked.");
+      onNotify("success", "API key revoked.");
     } catch (err) {
-      setApiKeyMessage((err as Error).message);
+      const nextMessage = (err as Error).message;
+      setApiKeyMessage(nextMessage);
+      onNotify("error", nextMessage);
     }
   };
 
@@ -1254,6 +1343,9 @@ function AppShell({
   onUserRefresh,
   theme,
   onToggleTheme,
+  onNotify,
+  toasts,
+  onDismissToast,
 }: {
   token: string;
   user: User;
@@ -1261,6 +1353,9 @@ function AppShell({
   onUserRefresh: () => Promise<void>;
   theme: "light" | "dark";
   onToggleTheme: () => void;
+  onNotify: (variant: AppToast["variant"], message: string) => void;
+  toasts: AppToast[];
+  onDismissToast: (id: number) => void;
 }) {
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -1343,8 +1438,14 @@ function AppShell({
       )}
       <main className="content">
         <Routes>
-          <Route path="/" element={<DashboardPage token={token} user={user} onUserRefresh={onUserRefresh} />} />
-          <Route path="/market/:id" element={<MarketDetailPage token={token} user={user} onUserRefresh={onUserRefresh} />} />
+          <Route
+            path="/"
+            element={<DashboardPage token={token} user={user} onUserRefresh={onUserRefresh} onNotify={onNotify} />}
+          />
+          <Route
+            path="/market/:id"
+            element={<MarketDetailPage token={token} user={user} onUserRefresh={onUserRefresh} onNotify={onNotify} />}
+          />
           <Route
             path="/profile"
             element={
@@ -1355,6 +1456,7 @@ function AppShell({
                   onUserRefresh={onUserRefresh}
                   theme={theme}
                   onToggleTheme={onToggleTheme}
+                  onNotify={onNotify}
                 />
                 <section className="panel mobile-logout-panel">
                   <button className="ghost mobile-logout-btn" onClick={onLogout}>
@@ -1368,6 +1470,7 @@ function AppShell({
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <ToastViewport toasts={toasts} onDismiss={onDismissToast} />
     </div>
   );
 }
@@ -1379,6 +1482,7 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(
     (localStorage.getItem("theme") as "light" | "dark") || "light"
   );
+  const [toasts, setToasts] = useState<AppToast[]>([]);
 
   const onAuth = (newToken: string, authUser: User) => {
     localStorage.setItem("pm_token", newToken);
@@ -1397,6 +1501,18 @@ export function App() {
     const response = await apiRequest<{ user: User }>("/me", {}, token);
     setUser(response.user);
   }, [token]);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  const notify = useCallback((variant: AppToast["variant"], message: string) => {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setToasts((current) => [...current, { id, variant, message }]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, TOAST_MS);
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -1434,6 +1550,9 @@ export function App() {
       onUserRefresh={refreshMe}
       theme={theme}
       onToggleTheme={() => setTheme((old) => (old === "light" ? "dark" : "light"))}
+      onNotify={notify}
+      toasts={toasts}
+      onDismissToast={dismissToast}
     />
   );
 }

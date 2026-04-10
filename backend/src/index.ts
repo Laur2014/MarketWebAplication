@@ -257,7 +257,22 @@ async function repairMissingWinningPayouts() {
 
 const SESSION_COOKIE_NAME = "pm_session";
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const API_RATE_LIMIT_MAX = 300;
+const AUTH_REGISTER_LIMIT = 10;
+const AUTH_LOGIN_IP_LIMIT = 30;
+const AUTH_LOGIN_ACCOUNT_LIMIT = 5;
+const API_KEY_RATE_LIMIT = 20;
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+function getClientIp(request: Request) {
+  const forwardedIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  return forwardedIp || realIp || "local";
+}
+
+function normalizeRateLimitScope(value: string) {
+  return value.trim().toLowerCase();
+}
 
 function getSessionCookieOptions(request: Request) {
   const originHeader = request.headers.get("origin");
@@ -282,36 +297,67 @@ function dbBoolean(value: boolean) {
   return db.provider === "postgres" ? value : value ? 1 : 0;
 }
 
-function setSessionCookie(set: { headers?: Record<string, string> }, request: Request, token: string, expiresAt: string) {
+function setResponseHeader(set: { headers?: unknown }, name: string, value: string) {
+  if (!set.headers || typeof set.headers !== "object") {
+    set.headers = {};
+  }
+
+  (set.headers as Record<string, string>)[name] = value;
+}
+
+function setSessionCookie(set: { headers?: unknown }, request: Request, token: string, expiresAt: string) {
   const maxAgeSeconds = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
-  set.headers = set.headers || {};
-  set.headers["Set-Cookie"] = cookieHeaderValue(request, token, maxAgeSeconds);
+  setResponseHeader(set, "Set-Cookie", cookieHeaderValue(request, token, maxAgeSeconds));
 }
 
-function clearSessionCookie(set: { headers?: Record<string, string> }, request: Request) {
-  set.headers = set.headers || {};
-  set.headers["Set-Cookie"] = cookieHeaderValue(request, "", 0);
+function clearSessionCookie(set: { headers?: unknown }, request: Request) {
+  setResponseHeader(set, "Set-Cookie", cookieHeaderValue(request, "", 0));
 }
 
-function consumeRateLimit(request: Request, keyPrefix: string, limit: number) {
+function consumeRateLimit(
+  request: Request,
+  keyPrefix: string,
+  limit: number,
+  options?: { windowMs?: number; scope?: string }
+) {
   const now = Date.now();
-  const forwardedIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const ip = forwardedIp || "local";
-  const key = `${keyPrefix}:${ip}`;
+  const windowMs = options?.windowMs ?? RATE_LIMIT_WINDOW_MS;
+  const ip = getClientIp(request);
+  const scopeSuffix = options?.scope ? `:${normalizeRateLimitScope(options.scope)}` : "";
+  const key = `${keyPrefix}:${ip}${scopeSuffix}`;
 
   const entry = rateLimitStore.get(key);
   if (!entry || entry.resetAt <= now) {
-    rateLimitStore.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return true;
+    rateLimitStore.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfterSeconds: Math.ceil(windowMs / 1000) };
   }
 
   if (entry.count >= limit) {
-    return false;
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+    };
   }
 
   entry.count += 1;
   rateLimitStore.set(key, entry);
-  return true;
+  return {
+    allowed: true,
+    retryAfterSeconds: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+  };
+}
+
+function clearRateLimit(request: Request, keyPrefix: string, scope?: string) {
+  const ip = getClientIp(request);
+  const scopeSuffix = scope ? `:${normalizeRateLimitScope(scope)}` : "";
+  rateLimitStore.delete(`${keyPrefix}:${ip}${scopeSuffix}`);
+}
+
+function applyRateLimitHeaders(
+  set: { headers?: unknown },
+  retryAfterSeconds: number
+) {
+  setResponseHeader(set, "Retry-After", String(retryAfterSeconds));
 }
 
 async function insertAndGetId(sqlText: string, ...params: unknown[]) {
@@ -353,9 +399,35 @@ const app = new Elysia()
       allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
     })
   )
+  .onBeforeHandle(({ request, set }) => {
+    const pathname = new URL(request.url).pathname;
+
+    if (request.method === "OPTIONS" || pathname === "/health") {
+      return;
+    }
+
+    if (pathname === "/auth/login" || pathname === "/auth/register") {
+      return;
+    }
+
+    const rateLimit = consumeRateLimit(request, "api:global", API_RATE_LIMIT_MAX);
+    if (!rateLimit.allowed) {
+      applyRateLimitHeaders(set, rateLimit.retryAfterSeconds);
+      set.status = 429;
+      return { error: "Too many requests. Please try again later." };
+    }
+  })
+  .onAfterHandle(({ set }) => {
+    setResponseHeader(set, "X-Content-Type-Options", "nosniff");
+    setResponseHeader(set, "X-Frame-Options", "DENY");
+    setResponseHeader(set, "Referrer-Policy", "no-referrer");
+    setResponseHeader(set, "Cache-Control", "no-store");
+  })
   .get("/health", () => ({ ok: true }))
   .post("/auth/register", async ({ body, set, request }) => {
-    if (!consumeRateLimit(request, "auth:register", 20)) {
+    const rateLimit = consumeRateLimit(request, "auth:register", AUTH_REGISTER_LIMIT);
+    if (!rateLimit.allowed) {
+      applyRateLimitHeaders(set, rateLimit.retryAfterSeconds);
       set.status = 429;
       return { error: "Too many registration attempts. Please try again later." };
     }
@@ -414,18 +486,29 @@ const app = new Elysia()
     };
   })
   .post("/auth/login", async ({ body, set, request }) => {
-    if (!consumeRateLimit(request, "auth:login", 40)) {
-      set.status = 429;
-      return { error: "Too many login attempts. Please try again later." };
-    }
-
     const payload = (body ?? {}) as { username?: string; password?: string };
     const username = payload.username?.trim();
     const password = payload.password || "";
 
+    const ipRateLimit = consumeRateLimit(request, "auth:login", AUTH_LOGIN_IP_LIMIT);
+    if (!ipRateLimit.allowed) {
+      applyRateLimitHeaders(set, ipRateLimit.retryAfterSeconds);
+      set.status = 429;
+      return { error: "Too many login attempts. Please try again later." };
+    }
+
     if (!username || !password) {
       set.status = 400;
       return { error: "Username and password are required" };
+    }
+
+    const accountRateLimit = consumeRateLimit(request, "auth:login:account", AUTH_LOGIN_ACCOUNT_LIMIT, {
+      scope: username,
+    });
+    if (!accountRateLimit.allowed) {
+      applyRateLimitHeaders(set, accountRateLimit.retryAfterSeconds);
+      set.status = 429;
+      return { error: "Too many login attempts for this account. Try again in 10 minutes." };
     }
 
     const user = (await db
@@ -459,6 +542,7 @@ const app = new Elysia()
       return { error: "Invalid credentials" };
     }
 
+    clearRateLimit(request, "auth:login:account", username);
     const session = await createSessionAsync(user.id);
     setSessionCookie(set, request, session.token, session.expiresAt);
 
@@ -553,7 +637,9 @@ const app = new Elysia()
     return { user: authResult };
   })
   .post("/me/api-key", async ({ request, set }) => {
-    if (!consumeRateLimit(request, "api-key:generate", 30)) {
+    const rateLimit = consumeRateLimit(request, "api-key:generate", API_KEY_RATE_LIMIT);
+    if (!rateLimit.allowed) {
+      applyRateLimitHeaders(set, rateLimit.retryAfterSeconds);
       set.status = 429;
       return { error: "Too many API key requests. Please try again later." };
     }
@@ -571,7 +657,9 @@ const app = new Elysia()
     return { apiKey: rawApiKey };
   })
   .delete("/me/api-key", async ({ request, set }) => {
-    if (!consumeRateLimit(request, "api-key:revoke", 30)) {
+    const rateLimit = consumeRateLimit(request, "api-key:revoke", API_KEY_RATE_LIMIT);
+    if (!rateLimit.allowed) {
+      applyRateLimitHeaders(set, rateLimit.retryAfterSeconds);
       set.status = 429;
       return { error: "Too many API key requests. Please try again later." };
     }
