@@ -758,6 +758,13 @@ function MarketDetailPage({
   const [trendNow, setTrendNow] = useState(Date.now());
   const [trendHistory, setTrendHistory] = useState<HistorySnapshot[]>([]);
 
+  useEffect(() => {
+    setSelectedOutcome(null);
+    setResolveOutcomeId(null);
+    setTrendHoverIndex(null);
+    setMessage("");
+  }, [marketId]);
+
   const load = useCallback(async (options?: { silent?: boolean }) => {
     if (!marketId) return;
     const silent = Boolean(options?.silent);
@@ -771,12 +778,8 @@ function MarketDetailPage({
       const response = await apiRequest<{ market: Market }>(`/markets/${marketId}`);
       setMarket(response.market);
       setTrendNow(Date.now());
-      if (!selectedOutcome && response.market.outcomes.length > 0) {
-        setSelectedOutcome(response.market.outcomes[0].id);
-      }
-      if (!resolveOutcomeId && response.market.outcomes.length > 0) {
-        setResolveOutcomeId(response.market.outcomes[0].id);
-      }
+      setSelectedOutcome((current) => current ?? response.market.outcomes[0]?.id ?? null);
+      setResolveOutcomeId((current) => current ?? response.market.outcomes[0]?.id ?? null);
     } catch (err) {
       if (!silent) {
         setError((err as Error).message);
@@ -788,7 +791,7 @@ function MarketDetailPage({
         setLoading(false);
       }
     }
-  }, [marketId, selectedOutcome, resolveOutcomeId]);
+  }, [marketId]);
 
   const loadTrendHistory = useCallback(async () => {
     if (!marketId) return;

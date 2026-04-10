@@ -115,7 +115,55 @@ async function getOutcomeIdByLabel(marketId: number, label: string) {
   return row?.id ?? null;
 }
 
-async function placeSeedBet(userId: number, marketId: number, outcomeId: number, amount: number) {
+function calculateOutcomeStats(stakedByOutcome: number, totalPool: number) {
+  if (totalPool <= 0 || stakedByOutcome <= 0) {
+    return {
+      stake: stakedByOutcome,
+      share: 0,
+      percentage: 0,
+      odds: null as number | null,
+    };
+  }
+
+  const share = stakedByOutcome / totalPool;
+  return {
+    stake: stakedByOutcome,
+    share,
+    percentage: Number((share * 100).toFixed(2)),
+    odds: Number((1 / share).toFixed(2)),
+  };
+}
+
+async function createSeedMarketSnapshot(marketId: number, createdAt: string) {
+  const market = (await db
+    .query("SELECT id, status, total_pool FROM markets WHERE id = ?")
+    .get(marketId)) as { id: number; status: string; total_pool: number } | null;
+
+  if (!market) return;
+
+  const outcomes = (await db
+    .query("SELECT id, label, total_amount_staked FROM outcomes WHERE market_id = ? ORDER BY id ASC")
+    .all(marketId)) as Array<{ id: number; label: string; total_amount_staked: number }>;
+
+  const totalPool = Number(market.total_pool || 0);
+  const snapshotPayload = {
+    totalPool,
+    status: market.status,
+    outcomes: outcomes.map((outcome) => ({
+      id: outcome.id,
+      label: outcome.label,
+      ...calculateOutcomeStats(Number(outcome.total_amount_staked || 0), totalPool),
+    })),
+  };
+
+  await db.query("INSERT INTO market_snapshots (market_id, created_at, data_json) VALUES (?, ?, ?)").run(
+    marketId,
+    createdAt,
+    JSON.stringify(snapshotPayload)
+  );
+}
+
+async function placeSeedBet(userId: number, marketId: number, outcomeId: number, amount: number, createdAt = nowIso()) {
   const user = (await db.query("SELECT balance FROM users WHERE id = ?").get(userId)) as { balance: number } | null;
   if (!user || user.balance < amount) {
     return false;
@@ -131,8 +179,6 @@ async function placeSeedBet(userId: number, marketId: number, outcomeId: number,
   const hasMarketBet = (await db
     .query("SELECT 1 as value FROM bets WHERE user_id = ? AND market_id = ? LIMIT 1")
     .get(userId, marketId)) as { value: number } | null;
-
-  const createdAt = nowIso();
 
   await db.query("UPDATE users SET balance = balance - ? WHERE id = ?").run(amount, userId);
 
@@ -158,6 +204,8 @@ async function placeSeedBet(userId: number, marketId: number, outcomeId: number,
     "INSERT INTO transactions (user_id, type, amount, market_id, bet_id, created_at, meta) VALUES (?, 'bet_placed', ?, ?, ?, ?, ?)"
   ).run(userId, -amount, marketId, betId, createdAt, "{\"source\":\"seed\"}");
 
+  await createSeedMarketSnapshot(marketId, createdAt);
+
   return true;
 }
 
@@ -176,6 +224,10 @@ async function insertAndGetId(sqlText: string, ...params: unknown[]) {
 
 function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomTimestampBetween(startMs: number, endMs: number) {
+  return new Date(randomInt(startMs, endMs)).toISOString();
 }
 
 async function run() {
@@ -536,10 +588,6 @@ async function run() {
       total: number;
     };
 
-    if (Number(existingBets.total) > 0) {
-      continue;
-    }
-
     const outcomes = (await db
       .query("SELECT id, label FROM outcomes WHERE market_id = ? ORDER BY id ASC")
       .all(marketId)) as Array<{ id: number; label: string }>;
@@ -548,18 +596,17 @@ async function run() {
       continue;
     }
 
-    const picks = randomInt(3, 7);
-    for (let i = 0; i < picks; i++) {
+    const targetBetCount = randomInt(10, 18);
+    const betsToAdd = Math.max(0, targetBetCount - Number(existingBets.total || 0));
+    const nowMs = Date.now();
+    const oneWeekAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+
+    for (let i = 0; i < betsToAdd; i++) {
       const userId = userIds[randomInt(0, userIds.length - 1)];
       const outcome = outcomes[randomInt(0, outcomes.length - 1)];
-      const amount = randomInt(20, 180);
-      await placeSeedBet(userId, marketId, outcome.id, amount);
-    }
-
-    if (outcomes.length > 0) {
-      const forcedUser = userIds[randomInt(0, userIds.length - 1)];
-      const outcome = outcomes[0];
-      await placeSeedBet(forcedUser, marketId, outcome.id, randomInt(30, 90));
+      const amount = randomInt(10, 220);
+      const createdAt = randomTimestampBetween(oneWeekAgoMs, nowMs - 2 * 60 * 1000);
+      await placeSeedBet(userId, marketId, outcome.id, amount, createdAt);
     }
   }
 
@@ -578,8 +625,9 @@ async function run() {
     const yesId = await getOutcomeIdByLabel(sampleMarketId, "Yes");
     const noId = await getOutcomeIdByLabel(sampleMarketId, "No");
     if (yesId && noId) {
-      await placeSeedBet(userIds[0], sampleMarketId, yesId, 75);
-      await placeSeedBet(userIds[1], sampleMarketId, noId, 50);
+      const nowMs = Date.now();
+      await placeSeedBet(userIds[0], sampleMarketId, yesId, 75, new Date(nowMs - 5 * 24 * 60 * 60 * 1000).toISOString());
+      await placeSeedBet(userIds[1], sampleMarketId, noId, 50, new Date(nowMs - 2 * 24 * 60 * 60 * 1000).toISOString());
     }
   }
 
