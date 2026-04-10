@@ -752,7 +752,6 @@ function MarketDetailPage({
   const [amount, setAmount] = useState("");
   const [message, setMessage] = useState("");
   const [resolveOutcomeId, setResolveOutcomeId] = useState<number | null>(null);
-  const showBetSuccess = false;
   const [trendRange, setTrendRange] = useState<TrendRange>("6h");
   const [trendHoverIndex, setTrendHoverIndex] = useState<number | null>(null);
   const [trendNow, setTrendNow] = useState(Date.now());
@@ -800,9 +799,7 @@ function MarketDetailPage({
         `/markets/${marketId}/history?range=${trendRange}`
       );
       setTrendHistory(response.snapshots || []);
-    } catch {
-      // Keep UI usable even if history fetch fails.
-    }
+    } catch {}
   }, [marketId, trendRange]);
 
   useEffect(() => {
@@ -1109,12 +1106,6 @@ function MarketDetailPage({
           )}
           {message && <div>{message}</div>}
         </>
-      )}
-      {showBetSuccess && (
-        <div className="bet-success-popup">
-          <div className="bet-success-check">✓</div>
-          <div>Bet placed successfully</div>
-        </div>
       )}
     </div>
   );
