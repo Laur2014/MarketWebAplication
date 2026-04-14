@@ -35,6 +35,11 @@
   box-sizing: border-box;
 }
 
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
 }
@@ -229,6 +234,17 @@ select {
   border-radius: 0.45rem;
   background: transparent;
   color: var(--text);
+}
+
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 select {
@@ -625,15 +641,18 @@ option {
 }
 
 .refreshing-hint {
-  min-height: 1.25rem;
+  height: 1.25rem;
   font-size: 0.85rem;
+  line-height: 1.25rem;
   color: var(--muted);
   opacity: 0;
+  visibility: hidden;
   transition: opacity 0.18s ease;
 }
 
 .refreshing-hint.active {
   opacity: 1;
+  visibility: visible;
 }
 
 .outcomes-picker {
