@@ -764,6 +764,24 @@ function MarketDetailPage({
   const [trendNow, setTrendNow] = useState(Date.now());
   const [trendHistory, setTrendHistory] = useState<HistorySnapshot[]>([]);
 
+  const normalizeAmount = useCallback((value: string) => value.trim().replace(",", "."), []);
+
+  const validateAmount = useCallback(
+    (value: string) => {
+      const normalized = normalizeAmount(value);
+      if (!normalized) return "Enter a bet amount.";
+      if (!/^\d*\.?\d+$/.test(normalized)) {
+        return "Bet amount must use only digits and an optional decimal point.";
+      }
+      const parsed = Number(normalized);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return "Bet amount must be a positive number.";
+      }
+      return "";
+    },
+    [normalizeAmount]
+  );
+
   useEffect(() => {
     setSelectedOutcome(null);
     setResolveOutcomeId(null);
@@ -827,19 +845,19 @@ function MarketDetailPage({
   const placeBet = async (event: FormEvent) => {
     event.preventDefault();
     setMessage("");
-    const parsed = Number(amount);
+    const amountError = validateAmount(amount);
     if (!selectedOutcome) {
       const nextMessage = "Select an outcome.";
       setMessage(nextMessage);
       onNotify("error", nextMessage);
       return;
     }
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      const nextMessage = "Bet amount must be a positive number.";
-      setMessage(nextMessage);
-      onNotify("error", nextMessage);
+    if (amountError) {
+      setMessage(amountError);
+      onNotify("error", amountError);
       return;
     }
+    const parsed = Number(normalizeAmount(amount));
 
     try {
       await apiRequest(
@@ -1083,9 +1101,17 @@ function MarketDetailPage({
                 <input
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
-                  type="number"
-                  min={0}
-                  step="0.01"
+                  onBlur={() => {
+                    if (!amount.trim()) return;
+                    const amountError = validateAmount(amount);
+                    if (!amountError) return;
+                    setMessage(amountError);
+                    onNotify("error", amountError);
+                  }}
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  placeholder="e.g. 25.50"
                   disabled={market.status !== "active"}
                 />
               </label>
