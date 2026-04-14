@@ -399,17 +399,24 @@ function DashboardPage({
   const [customOutcome, setCustomOutcome] = useState("");
   const [createMessage, setCreateMessage] = useState("");
 
-  const loadMarkets = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const loadMarkets = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const query = `?page=${page}&limit=20&status=${status}&sort=${sort}&order=${order}`;
       const response = await apiRequest<Paginated<Market>>(`/markets${query}`);
       setData(response);
     } catch (err) {
-      setError((err as Error).message);
+      if (!silent) {
+        setError((err as Error).message);
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [page, status, sort, order]);
 
@@ -460,7 +467,7 @@ function DashboardPage({
     loadLeaderboard();
     loadFastResolveMarkets();
     const interval = setInterval(() => {
-      loadMarkets();
+      loadMarkets({ silent: true });
       loadLeaderboard();
       loadFastResolveMarkets();
     }, POLL_MS);
