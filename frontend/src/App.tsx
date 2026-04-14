@@ -320,7 +320,7 @@ function AuthScreen({ onAuth }: { onAuth: (token: string, user: User) => void })
           {isRegister ? "Have an account? Login" : "No account? Register"}
         </button>
         <div className="demo-tip">
-          Demo accounts after seed: <code>admin/admin123</code> and <code>user/user1234</code>
+          Demo accounts: <code>admin/admin123</code> and <code>user/user1234</code>
         </div>
       </div>
     </div>
@@ -895,7 +895,15 @@ function MarketDetailPage({
         Back
       </button>
       {loading && <div>Loading market...</div>}
-      {!loading && isRefreshing && <div className="refreshing-hint">Updating live odds...</div>}
+      {!loading && (
+        <div
+          className={`refreshing-hint ${isRefreshing ? "active" : ""}`}
+          aria-live="polite"
+          aria-hidden={!isRefreshing}
+        >
+          Updating live odds...
+        </div>
+      )}
       {error && <div className="error">{error}</div>}
       {!loading && !error && market && (
         <>
