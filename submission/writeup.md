@@ -124,10 +124,6 @@ I also reviewed the SQL usage. Queries are parameterized throughout the backend,
   - Cause: the data loader depended on selection state
   - Fix: loader dependencies were reduced so selection changes no longer retrigger the full page load
 
-- Demo realism:
-  - Early graphs were too flat because markets had very little historic betting activity
-  - Fix: seed logic was expanded to create more varied bets over different timestamps and persist market snapshots
-
 ## Manual smoke tests executed
 
 - login as normal user and admin
@@ -141,6 +137,3 @@ I also reviewed the SQL usage. Queries are parameterized throughout the backend,
 - generate and revoke API key
 - verify live deployment and production seeding
 
-## Remaining manual submission step
-
-- Add screenshots or a public demo video link to the `submission/` folder before final submission.

@@ -1,6 +1,6 @@
 # MarketWebAplication
 
-Prediction market web app for the Vertigo Internship 2026 challenge.
+Prediction market web app for the Vertigo Internship.
 
 ## Stack
 
@@ -13,19 +13,22 @@ Prediction market web app for the Vertigo Internship 2026 challenge.
 - Register/login with hashed passwords
 - Role system (`user`, `admin`)
 - Create market (authenticated)
+- Light/dark theme toggle
 - Dashboard with:
   - filter by status
   - sort by creation date / total bet size / participants
   - pagination (20/page)
-  - near real-time updates via polling
+  - near real-time updates via silent polling
 - Market detail with:
   - outcome percentage chart
   - odds per outcome
-  - place bet with validation
+  - live trend chart with 5-second refresh
+  - place bet with client + server validation
 - User profile with:
   - balance and total winnings
   - active bets (paginated)
   - resolved bets (paginated)
+  - admin resolved-markets view
   - near real-time updates for active bets
 - Leaderboard by total winnings
 - Admin actions:
@@ -36,6 +39,7 @@ Prediction market web app for the Vertigo Internship 2026 challenge.
 - Bonus:
   - API key generation/revoke
   - API key authentication via `X-API-Key`
+  - success/error toast notifications across key actions
 
 ## Setup
 
@@ -64,7 +68,6 @@ bun run dev
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:3001`
-- online website: `https://marketwebaplication.pages.dev`
 Frontend API base URL can be configured with:
 
 ```bash
@@ -76,7 +79,7 @@ VITE_API_BASE_URL=http://localhost:3001
 
 Set these environment variables for backend:
 
-- `DATABASE_URL` = your Neon Postgres connection string
+- `DATABASE_URL=<your_neon_connection_string>`
 - optional `DB_PROVIDER=postgres` (auto-detected when `DATABASE_URL` exists)
 - optional `PG_POOL_MAX=10`
 
@@ -94,11 +97,15 @@ Recommended split:
 - Frontend: Cloudflare Pages
 - Database: Neon Postgres
 
+Current deployed URLs:
+- Frontend: `https://marketwebaplication.pages.dev`
+- Backend: `https://marketwebaplication.onrender.com`
+
 Environment variables:
 
 Backend (Render):
 - `PORT=3001`
-- `DATABASE_URL=<your_neon_connection_string>`
+- `DATABASE_URL=<my_private_neon_connection_string>`
 - optional `DB_PROVIDER=postgres`
 - optional `PG_POOL_MAX=10`
 
@@ -147,12 +154,15 @@ Then trigger a backend redeploy from Render.
 
 ### Auth / User
 
+- Protected endpoints can be called with a Bearer token after login.
+- Bonus support: API clients can also authenticate with `X-API-Key` where applicable.
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/logout`
 - `GET /me`
 - `GET /me/bets/active?page=1&limit=20`
 - `GET /me/bets/resolved?page=1&limit=20`
+- `GET /me/markets/resolved-by-me?page=1&limit=20` (admin only)
 - `POST /me/api-key`
 - `DELETE /me/api-key`
 
@@ -176,8 +186,18 @@ Then trigger a backend redeploy from Render.
 ## Notes
 
 - Polling interval for near real-time updates: 5 seconds.
+- Dashboard and market detail polling are silent, so the page does not visibly jump during refresh.
 - Pagination is capped at 20 items per page.
 - Session duration is 14 days from login.
 - Local SQLite file is created at `backend/data/market.db`.
 - When `DATABASE_URL` is present, backend uses Postgres/Neon instead of local SQLite.
+- Market detail includes a live trend chart and client-side bet validation feedback.
+- Toast notifications are used for key success/error actions.
 - Challenge submission docs are in `submission/`.
+
+## Troubleshooting
+
+- `401 Invalid credentials` right after successful `register` (Postgres/Neon):
+  - Cause: Postgres returns unquoted aliases in lowercase; camelCase aliases like `passwordHash` can be read as `undefined` in login checks.
+  - Fix implemented: auth queries now use snake_case fields (`password_hash`, `created_at`, `total_winnings`) and explicit mapping to API response shape.
+  - Action: redeploy backend after pulling latest commit.
